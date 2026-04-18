@@ -9,7 +9,7 @@
         "RepoUrl": "https://github.com/a325245/ChatCasino",
         "AcceptsFeedback": false,
         "DalamudApiLevel": 14,
-        "AssemblyVersion": "1.4",
+        "AssemblyVersion": "1.4.1",
         "DownloadLinkInstall": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
         "DownloadLinkUpdate": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
         "Changelog": "Initial Version 2",
