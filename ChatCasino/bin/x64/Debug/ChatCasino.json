@@ -1,0 +1,23 @@
+{
+  "Author": "Your Server's Dealer",
+  "Name": "Chat Casino",
+  "InternalName": "ChatCasino",
+  "AssemblyVersion": "1.4.1.0",
+  "Description": "A fully-featured casino plugin for FFXIV. Commands: /casino to open the player view, /casino dealer for the dealer panel. Players use > commands in /party chat to play. Features blackjack, poker, roulette, craps, baccarat, chocobo racing, and Ultima!",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "casino",
+    "blackjack",
+    "poker",
+    "games",
+    "cards",
+    "entertainment"
+  ],
+  "DalamudApiLevel": 14,
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "Punchline": "Play casino games with your friends in FFXIV!",
+  "AcceptsFeedback": true
+}
