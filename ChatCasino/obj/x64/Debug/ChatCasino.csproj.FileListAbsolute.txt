@@ -1,9 +1,0 @@
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\bin\x64\Debug\ChatCasino.deps.json
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\bin\x64\Debug\ChatCasino.dll
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.csproj.AssemblyReference.cache
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.AssemblyInfoInputs.cache
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.AssemblyInfo.cs
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.csproj.CoreCompileInputs.cache
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.sourcelink.json
-C:\Users\Justi\source\repos\clap-jack2\ChatCasino\obj\x64\Debug\ChatCasino.dll
