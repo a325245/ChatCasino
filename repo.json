@@ -4,15 +4,15 @@
         "Name": "Chat Casino",
         "InternalName": "ChatCasino",
         "Punchline": "Play casino games in XIV!",
-        "Description": "A fully-featured casino dealer plugin for FFXIV including Blackjack, Roulette, Baccrat, Craps, Texas Hold'em, and Ultima (an Uno clone) Commands: /casino to open the GUI.",
+        "Description": "A fully-featured casino engine for FFXIV. Use /casino to open the interface.",
         "ApplicableVersion": "any",
         "RepoUrl": "https://github.com/a325245/ChatCasino",
         "AcceptsFeedback": false,
-        "DalamudApiLevel": 14,
-        "AssemblyVersion": "1.4.1",
+        "DalamudApiLevel": 15,
+        "AssemblyVersion": "1.5.0.0",
         "DownloadLinkInstall": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
         "DownloadLinkUpdate": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
-        "Changelog": "Initial Version 2",
+        "Changelog": "major redo, now a lua engine",
         "IconUrl": "https://raw.githubusercontent.com/a325245/ChatCasino/main/images/icon.png"
     }
 ]
