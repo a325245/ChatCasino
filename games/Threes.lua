@@ -27,6 +27,7 @@ if TH == nil then
     dealer_ai = nil,
 
     dice_channel = "party",
+    dealer_rolls_for_players = false,
 
     chat_templates = {
       round_start = "Threes begins with <total> players.",
@@ -588,7 +589,11 @@ local function request_roll_for_unheld()
   TH.turn_roll_count = (tonumber(TH.turn_roll_count) or 0) + 1
   TH.auto_held_this_batch = 0
   TH.ready_to_end_turn = false
-  TH.info = active_player_name() .. " rolling " .. tostring(#TH.pending_slots) .. " dice..."
+  if TH.dealer_rolls_for_players then
+    TH.info = active_player_name() .. " rolling " .. tostring(#TH.pending_slots) .. " dice..."
+  else
+    TH.info = active_player_name() .. " roll /dice 6 for " .. tostring(#TH.pending_slots) .. " dice..."
+  end
 end
 
 local function process_dice_chat()
@@ -613,7 +618,11 @@ local function process_dice_chat()
     TH.next_roll_ms = now + 120
   end
 
-  if (not TH.roll_inflight) and #TH.pending_slots > 0 and now >= (TH.next_roll_ms or 0) then
+  local waitingForPlayerRoll = TH.dealer_rolls_for_players ~= true
+
+  if waitingForPlayerRoll then
+    TH.roll_inflight = true
+  elseif (not TH.roll_inflight) and #TH.pending_slots > 0 and now >= (TH.next_roll_ms or 0) then
     local channel = normalize_channel(TH.dice_channel)
     if dice_command == nil or not dice_command(channel, 6) then
       TH.info = "Dice command unavailable."
@@ -638,6 +647,13 @@ local function process_dice_chat()
       local upper = (dice_roll_upper ~= nil) and dice_roll_upper(message) or 0
 
       if rolled >= 1 and rolled <= 6 and upper == 6 then
+        if waitingForPlayerRoll then
+          local active = active_player_name()
+          if active ~= "" and string.lower(tostring(name or "")) ~= string.lower(active) then
+            goto continue_packet
+          end
+        end
+
         local slot = table.remove(TH.pending_slots, 1)
         local d = TH.dice[slot]
         d.value = rolled
@@ -663,6 +679,8 @@ local function process_dice_chat()
         break
       end
     end
+
+    ::continue_packet::
   end
 
   if #TH.pending_slots > 0 then
@@ -804,11 +822,19 @@ function draw_config_ui()
   ui_same_line()
   if ui_button("Use Party##th_cfg_party") then TH.dice_channel = "party" end
 
+  local dealerRolls = TH.dealer_rolls_for_players == true
+  dealerRolls = ui_checkbox("Dealer rolls for players", dealerRolls)
+  TH.dealer_rolls_for_players = dealerRolls
+
   local rollDelay = effective_roll_delay_ms()
   rollDelay = ui_input_int("Roll delay (ms)##th_roll_delay", rollDelay)
   TH.roll_delay_ms = rollDelay
   effective_roll_delay_ms()
-  ui_text("Used for player roll pacing and dealer narration pacing.")
+  if TH.dealer_rolls_for_players then
+    ui_text("Used for dealer roll pacing and dealer narration pacing.")
+  else
+    ui_text("Dealer roll pacing disabled for player turns; players roll their own /dice 6.")
+  end
 
   local vsDealer = TH.play_vs_dealer ~= false
   vsDealer = ui_checkbox("Players vs Dealer AI", vsDealer)
@@ -830,7 +856,11 @@ function draw_ui()
 
   ui_text_colored("--- INSTRUCTIONS ---", 0.7, 1.0, 0.7, 1.0)
   ui_text("1) Click New Round to start.")
-  ui_text("2) On your turn, click Roll Unheld Dice.")
+  if TH.dealer_rolls_for_players then
+    ui_text("2) On your turn, click Roll Unheld Dice.")
+  else
+    ui_text("2) On your turn, roll /dice 6 in chat until all unheld slots are filled.")
+  end
   ui_text("3) Hold at least one die between rolls.")
   ui_text("4) 3s auto-hold and count as 0 points.")
   ui_text("5) End Turn when all 5 dice are locked.")
@@ -856,6 +886,9 @@ function draw_ui()
   local current = active_player_name()
   if current ~= "" then
     ui_text("Active player: " .. current)
+    if TH.phase == "turn_active" and TH.awaiting_rolls and TH.dealer_rolls_for_players ~= true then
+      ui_text("Waiting for " .. current .. " to roll /dice 6...")
+    end
   end
 
   ui_separator()

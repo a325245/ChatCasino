@@ -580,28 +580,35 @@ local function send_tell(player, world, message)
   local msg = tostring(message or "")
   if msg == "" then return false end
 
+  local playerName = tostring(player or "")
+  if playerName == "" then return false end
+
   local targetWorld = tostring(world or "")
-  local sent = false
+  if (targetWorld == "" or targetWorld == "Unknown") and dealer_get_world ~= nil then
+    targetWorld = tostring(dealer_get_world(playerName) or targetWorld)
+  end
+  if targetWorld == "" then targetWorld = "Unknown" end
+
+  -- Prefer host dealer_tell because it already builds a valid tell command.
+  if dealer_tell ~= nil then
+    dealer_tell(playerName, targetWorld, msg)
+    log_info("dealer_tell => " .. playerName .. "@" .. targetWorld .. " | " .. msg)
+    return true
+  end
 
   if chat_command ~= nil then
     local cmd = ""
-    -- Fixed: If the world is empty or "Unknown", drop the @ symbol so the tell succeeds
-    if targetWorld == "" or targetWorld == "Unknown" then
-      cmd = "/tell " .. player .. " " .. msg
+    if targetWorld == "Unknown" then
+      cmd = "/tell " .. playerName .. " " .. msg
     else
-      cmd = "/tell " .. player .. "@" .. targetWorld .. " " .. msg
+      cmd = "/tell " .. playerName .. "@" .. targetWorld .. " " .. msg
     end
-    sent = chat_command(cmd) == true
+    local sent = chat_command(cmd) == true
     log_info("tell cmd => " .. cmd .. " | sent=" .. tostring(sent))
+    return sent
   end
 
-  if (not sent) and dealer_tell ~= nil then
-    dealer_tell(player, targetWorld, msg)
-    sent = true
-    log_info("dealer_tell fallback => " .. player .. "@" .. targetWorld .. " | " .. msg)
-  end
-
-  return sent
+  return false
 end
 
 local function send_links_to_players()
@@ -809,9 +816,9 @@ local function maybe_process_chat()
             if code == "" then
               send_tell(player, worldName, "Catchup unavailable right now.")
             else
-              BINGO.catchup_requests[player] = used + 1
-              send_tell(player, worldName, "Catchup code: " .. code)
-              announce("catchup", { player = player, result = code })
+              if send_tell(player, worldName, "Catchup code: " .. code) then
+                BINGO.catchup_requests[player] = used + 1
+              end
             end
           end
         elseif is_bingo_command(message) then

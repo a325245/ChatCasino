@@ -45,7 +45,7 @@ if SLOTS == nil then
 
     chat_templates = {
       queued = "<player> queued for <lines> lines! (Total: <total_bet> chips)",
-      turn_prompt = "<player>, you're up! Roll /dice party <roll> time(s).",
+      turn_prompt = "<player>, you're up! Roll \"/dice party\" <roll> times.",
       roll_progress = "<player> rolled <roll> (<lines>/<total_bet>).",
       spin_start = "<player> rolls: <reason>. Here we go!",
       result_win = "<player> won <payout> chips on <lines_won> lines! (<reason>)",
@@ -335,26 +335,42 @@ local function parse_roll_from_message(message)
 
   local rolled = (dice_roll_value ~= nil) and tonumber(dice_roll_value(msg)) or 0
   local upper = (dice_roll_upper ~= nil) and tonumber(dice_roll_upper(msg)) or 0
-  if rolled >= 1 and (upper == 0 or upper >= 1) then
+
+  -- Slots only accepts true /dice party style range (1-1000).
+  -- Reject bounded random lines like (1-3), (1-6), etc.
+  if upper > 0 then
+    if upper ~= 1000 then
+      return nil
+    end
+    if rolled == 0 then
+      return 1000
+    end
+    if rolled >= 1 and rolled <= 1000 then
+      return rolled
+    end
+  elseif rolled >= 1 and rolled <= 1000 then
+    -- Keep permissive path for parser variants that return value without explicit upper.
     return rolled
-  end
-  if rolled == 0 and upper >= 1 then
-    return 1000
   end
 
   -- Fallback for raw FFXIV output like: "Random! (1-1000) 16"
   if string.find(lower, "random", 1, true) ~= nil then
-     local last = nil
-     for n in string.gmatch(msg, "(%d+)") do
-       last = tonumber(n)
-     end
-    if last == 0 then
-      return 1000
+    local nums = {}
+    for n in string.gmatch(msg, "(%d+)") do
+      table.insert(nums, tonumber(n))
     end
-    if (last or 0) >= 1 then
-       return last
-     end
-   end
+
+    if #nums >= 3 then
+      local lower_bound = tonumber(nums[1]) or 0
+      local upper_bound = tonumber(nums[2]) or 0
+      local last = tonumber(nums[#nums]) or -1
+
+      if lower_bound == 1 and upper_bound == 1000 then
+        if last == 0 then return 1000 end
+        if last >= 1 and last <= 1000 then return last end
+      end
+    end
+  end
 
   return nil
 end
