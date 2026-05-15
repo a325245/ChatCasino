@@ -11,10 +11,13 @@ if CR == nil then
     race_start_ms = 0,
     race_duration_ms = 30000,
     commentary_interval_ms = 5000,
+    chat_delay_ms = 1000,
     track_width = 75,
     last_segment = 0,
     last_leader_id = nil,
     track_max_progress = 1,
+    pending_chat = {},
+    next_chat_at = 0,
 
     chat_templates = {
       bet = "<player> backs #<total> (<result>) for <bet>.",
@@ -36,8 +39,31 @@ local function output_channel_name()
   return "party"
 end
 
+local function effective_chat_delay_ms()
+  local v = tonumber(CR.chat_delay_ms) or 1000
+  if v < 100 then v = 100 end
+  if v > 5000 then v = 5000 end
+  CR.chat_delay_ms = math.floor(v)
+  return CR.chat_delay_ms
+end
+
 local function table_announce(message)
   local msg = message or ""
+  if msg == "" then return end
+  local now = (time_ms ~= nil) and time_ms() or 0
+  local at = tonumber(CR.next_chat_at) or now
+  if at < now then at = now end
+  table.insert(CR.pending_chat, { msg = msg, at = at })
+  CR.next_chat_at = at + effective_chat_delay_ms()
+end
+
+local function process_pending_chat()
+  if CR.pending_chat == nil or #CR.pending_chat == 0 then return end
+  local now = (time_ms ~= nil) and time_ms() or 0
+  local item = CR.pending_chat[1]
+  if item == nil or now < (tonumber(item.at) or 0) then return end
+  table.remove(CR.pending_chat, 1)
+  local msg = tostring(item.msg or "")
   if msg == "" then return end
   if chat_send ~= nil then
     chat_send(output_channel_name(), msg)
@@ -692,6 +718,9 @@ function draw_config_ui()
   ui_text_colored("Chocobo Racing Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
 
+  CR.chat_delay_ms = ui_input_int("Chat message delay (ms)", effective_chat_delay_ms())
+  effective_chat_delay_ms()
+
   local width = ui_input_int("Track width (chars)", tonumber(CR.track_width) or 75)
   if width < 30 then width = 30 end
   if width > 150 then width = 150 end
@@ -711,6 +740,7 @@ function draw_ui()
     generate_field()
   end
 
+  process_pending_chat()
   process_chat_bets()
   process_race_tick()
 
