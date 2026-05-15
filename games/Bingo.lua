@@ -17,11 +17,14 @@ if BINGO == nil then
 
     mode = "single", -- single | progressive
     single_condition = "1_line",
-    progressive_playlist = { "1_line", "2_line", "4_corners", "blackout" },
+    progressive_playlist = { "1_line", "2_line", "blackout" },
     progressive_round_index = 1,
     progressive_results = {},
     progressive_carryover_enabled = false,
     progressive_carryover_percent = 20,
+
+    house_take_percent = 10,
+    progressive_fixed_split = { 20, 35, 45 },
 
     pot_size = 100000,
     suggested_payouts = {},
@@ -49,7 +52,19 @@ if BINGO == nil then
       winner = "BINGO! <player> wins.",
       links_sent = "Bingo links sent by tell: <total>",
       catchup = "Catchup sent to <player>.", -- Fixed: No longer broadcasts the code publicly
-    }
+    },
+
+    autodraw_enabled = false,
+    autodraw_interval_ms = 5000,
+    autodraw_next_ms = 0,
+    autodraw_started = false,
+
+    dealer_view_collapsed = false,
+
+    tell_queue = {},
+    tell_send_interval_ms = 1250,
+    tell_next_send_ms = 0,
+    tell_queue_sent = 0,
   }
 end
 
@@ -59,6 +74,7 @@ local CONDITION_KEYS = { "1_line", "2_line", "4_corners", "inside_square", "outs
 local assign_player_codes, build_cipher_words
 local draw_mode_controls, draw_purchase_controls
 local hash_string, create_prng
+local condition_label, recalc_suggested_payouts
 
 local function normalize_player_key(name)
   local n = string.lower(tostring(name or ""))
@@ -125,9 +141,143 @@ build_cipher_words = function(roomName)
   return result
 end
 
--- Safety stubs in case UI is invoked before full script initialization completes.
-draw_mode_controls = function() end
-draw_purchase_controls = function() end
+-- Mode and purchase controls
+local function clamp_index(v, minv, maxv)
+  local n = tonumber(v) or minv
+  if n < minv then n = minv end
+  if n > maxv then n = maxv end
+  return n
+end
+
+draw_mode_controls = function()
+  ui_text_colored("Mode", 0.9, 0.95, 1.0, 1.0)
+
+  local isSingle = BINGO.mode ~= "progressive"
+  if isSingle then
+    if ui_button_colored ~= nil then
+      ui_button_colored("Single##bingo_mode_single", 0.2, 0.6, 0.2, 1.0)
+    else
+      ui_button("Single##bingo_mode_single")
+    end
+  else
+    if ui_button("Single##bingo_mode_single") then
+      BINGO.mode = "single"
+      recalc_suggested_payouts()
+    end
+  end
+
+  ui_same_line()
+
+  if not isSingle then
+    if ui_button_colored ~= nil then
+      ui_button_colored("Progressive##bingo_mode_prog", 0.2, 0.6, 0.2, 1.0)
+    else
+      ui_button("Progressive##bingo_mode_prog")
+    end
+  else
+    if ui_button("Progressive##bingo_mode_prog") then
+      BINGO.mode = "progressive"
+      if BINGO.progressive_playlist == nil or #BINGO.progressive_playlist == 0 then
+        BINGO.progressive_playlist = { "1_line", "2_line", "4_corners", "blackout" }
+      end
+      recalc_suggested_payouts()
+    end
+  end
+
+  if BINGO.mode ~= "progressive" then
+    BINGO.condition_picker_single = clamp_index(BINGO.condition_picker_single, 1, #CONDITION_KEYS)
+
+    if ui_button("<##single_cond_prev") then
+      BINGO.condition_picker_single = BINGO.condition_picker_single - 1
+      if BINGO.condition_picker_single < 1 then BINGO.condition_picker_single = #CONDITION_KEYS end
+    end
+    ui_same_line()
+    ui_text("Single target: " .. condition_label(CONDITION_KEYS[BINGO.condition_picker_single]))
+    ui_same_line()
+    if ui_button(">##single_cond_next") then
+      BINGO.condition_picker_single = BINGO.condition_picker_single + 1
+      if BINGO.condition_picker_single > #CONDITION_KEYS then BINGO.condition_picker_single = 1 end
+    end
+
+    BINGO.single_condition = CONDITION_KEYS[BINGO.condition_picker_single]
+    return
+  end
+
+  -- Progressive controls
+  BINGO.condition_picker_progressive = clamp_index(BINGO.condition_picker_progressive, 1, #CONDITION_KEYS)
+
+  local pot = ui_input_int("Progressive pot##bingo_pot", tonumber(BINGO.pot_size) or 100000)
+  if pot < 0 then pot = 0 end
+  BINGO.pot_size = pot
+
+  -- Carryover controls intentionally hidden in UI per dealer request.
+  BINGO.progressive_carryover_enabled = false
+
+  if ui_button("<##prog_cond_prev") then
+    BINGO.condition_picker_progressive = BINGO.condition_picker_progressive - 1
+    if BINGO.condition_picker_progressive < 1 then BINGO.condition_picker_progressive = #CONDITION_KEYS end
+  end
+  ui_same_line()
+  ui_text("Selected step: " .. condition_label(CONDITION_KEYS[BINGO.condition_picker_progressive]))
+  ui_same_line()
+  if ui_button(">##prog_cond_next") then
+    BINGO.condition_picker_progressive = BINGO.condition_picker_progressive + 1
+    if BINGO.condition_picker_progressive > #CONDITION_KEYS then BINGO.condition_picker_progressive = 1 end
+  end
+
+  if ui_button("Add Step##prog_add") then
+    table.insert(BINGO.progressive_playlist, CONDITION_KEYS[BINGO.condition_picker_progressive])
+  end
+  ui_same_line()
+  if ui_button("Remove Last##prog_remove") then
+    if #BINGO.progressive_playlist > 1 then
+      table.remove(BINGO.progressive_playlist, #BINGO.progressive_playlist)
+    end
+  end
+  ui_same_line()
+  if ui_button("Reset Default##prog_reset") then
+    BINGO.progressive_playlist = { "1_line", "2_line", "blackout" }
+    BINGO.progressive_round_index = 1
+    BINGO.progressive_fixed_split = { 20, 35, 45 }
+  end
+
+  recalc_suggested_payouts()
+
+  ui_text_colored("Progressive Playlist", 1.0, 1.0, 0.8, 1.0)
+  for i = 1, #BINGO.progressive_playlist do
+    local payout = tonumber(BINGO.suggested_payouts[i]) or 0
+    ui_text("R" .. tostring(i) .. ": " .. condition_label(BINGO.progressive_playlist[i]) .. " | suggested " .. tostring(payout))
+  end
+end
+
+draw_purchase_controls = function()
+  ui_text_colored("Cards per Player", 0.9, 0.95, 1.0, 1.0)
+
+  local count = (dealer_player_count ~= nil) and dealer_player_count() or 0
+  if count < 1 then
+    ui_text("(no players in dealer roster)")
+    return
+  end
+
+  local shown = 0
+  for i = 1, count do
+    local name = dealer_player_name(i)
+    if name ~= nil and name ~= "" and dealer_is_eligible(name) then
+      local current = tonumber(BINGO.cards_bought[name]) or 1
+      current = ui_input_int("Cards##bingo_cards_" .. normalize_player_key(name), current)
+      if current < 1 then current = 1 end
+      if current > 20 then current = 20 end
+      BINGO.cards_bought[name] = current
+      ui_same_line()
+      ui_text(tostring(name))
+      shown = shown + 1
+    end
+  end
+
+  if shown == 0 then
+    ui_text("(no eligible players)")
+  end
+end
 
 local function log_info(msg)
   if log ~= nil then log("[Bingo] " .. tostring(msg or "")) end
@@ -187,7 +337,7 @@ local function announce(key, ctx)
   table_announce(fmt(template, ctx))
 end
 
-local function condition_label(key)
+condition_label = function(key)
   if key == "1_line" then return "1 line" end
   if key == "2_line" then return "2 line" end
   if key == "4_corners" then return "4 corners" end
@@ -482,7 +632,23 @@ local function player_has_condition(name, condition)
   return false
 end
 
-local function recalc_suggested_payouts()
+local function progressive_split_percent(i, rounds)
+  local fixed = BINGO.progressive_fixed_split or {}
+  if rounds == 3 then
+    local v = tonumber(fixed[i]) or 0
+    if v < 0 then v = 0 end
+    return v
+  end
+
+  if rounds <= 1 then return 100 end
+  local base = math.floor(100 / rounds)
+  if i == rounds then
+    return 100 - (base * (rounds - 1))
+  end
+  return base
+end
+
+recalc_suggested_payouts = function()
   BINGO.suggested_payouts = {}
   if BINGO.mode ~= "progressive" then return end
 
@@ -492,12 +658,20 @@ local function recalc_suggested_payouts()
   local pot = tonumber(BINGO.pot_size) or 0
   if pot < 0 then pot = 0 end
 
+  local takePct = tonumber(BINGO.house_take_percent) or 0
+  if takePct < 0 then takePct = 0 end
+  if takePct > 50 then takePct = 50 end
+  BINGO.house_take_percent = takePct
+
+  local payoutPot = math.floor(pot * (100 - takePct) / 100)
+  if payoutPot < 0 then payoutPot = 0 end
+
   if BINGO.progressive_carryover_enabled then
     local carryPct = tonumber(BINGO.progressive_carryover_percent) or 0
     if carryPct < 0 then carryPct = 0 end
     if carryPct > 90 then carryPct = 90 end
 
-    local remaining = pot
+    local remaining = payoutPot
     for i = 1, rounds do
       if i == rounds then
         BINGO.suggested_payouts[i] = remaining
@@ -512,31 +686,15 @@ local function recalc_suggested_payouts()
     return
   end
 
-  local weightMap = {
-    ["1_line"] = 1,
-    ["2_line"] = 1.4,
-    ["4_corners"] = 1.7,
-    ["inside_square"] = 2.0,
-    ["outside_square"] = 2.3,
-    ["blackout"] = 3.0,
-    ["blitz_5"] = 0.8,
-  }
-
-  local totalWeight = 0
-  for i = 1, rounds do
-    totalWeight = totalWeight + (weightMap[BINGO.progressive_playlist[i]] or 1)
-  end
-  if totalWeight <= 0 then totalWeight = rounds end
-
   local assigned = 0
   for i = 1, rounds do
-    local w = weightMap[BINGO.progressive_playlist[i]] or 1
-    local amount = math.floor((pot * w) / totalWeight)
+    local pct = progressive_split_percent(i, rounds)
+    local amount = math.floor((payoutPot * pct) / 100)
     BINGO.suggested_payouts[i] = amount
     assigned = assigned + amount
   end
 
-  local remainder = pot - assigned
+  local remainder = payoutPot - assigned
   if remainder > 0 then
     BINGO.suggested_payouts[rounds] = (BINGO.suggested_payouts[rounds] or 0) + remainder
   end
@@ -559,6 +717,13 @@ local function reset_round_state()
   BINGO.selected_player = 1
   BINGO.selected_card = 1
   BINGO.progressive_results = {}
+  if BINGO.mode ~= "progressive" then
+    BINGO.autodraw_started = false
+    BINGO.autodraw_next_ms = 0
+  end
+  BINGO.tell_queue = {}
+  BINGO.tell_next_send_ms = 0
+  BINGO.tell_queue_sent = 0
 
   if BINGO.mode == "progressive" then
     BINGO.progressive_round_index = 1
@@ -614,7 +779,9 @@ end
 local function send_links_to_players()
   if #BINGO.players == 0 then return end
 
-  local sent = 0
+  BINGO.tell_queue = {}
+  BINGO.tell_queue_sent = 0
+
   for i = 1, #BINGO.players do
     local p = BINGO.players[i]
     local seed = BINGO.player_seed[p] or BINGO.player_codes[p] or room_seed_text()
@@ -627,11 +794,16 @@ local function send_links_to_players()
     local link = base .. sep .. "phrase=" .. url_encode(seed) .. "&count=" .. tostring(count)
 
     local world = (dealer_get_world ~= nil) and tostring(dealer_get_world(p) or "Unknown") or "Unknown"
-    if send_tell(p, world, "Your Bingo cards: " .. link) then sent = sent + 1 end
+    table.insert(BINGO.tell_queue, {
+      player = p,
+      world = world,
+      message = "Your Bingo cards: " .. link,
+    })
   end
 
-  announce("links_sent", { total = sent })
-  BINGO.info = "Sent links: " .. tostring(sent) .. " / " .. tostring(#BINGO.players)
+  local now = ((time_ms ~= nil) and time_ms() or 0)
+  BINGO.tell_next_send_ms = now
+  BINGO.info = "Queued links: 0 / " .. tostring(#BINGO.tell_queue)
 end
 
 local function start_round()
@@ -657,26 +829,40 @@ local function start_round()
   end
 
   assign_player_codes(BINGO.players)
-  BINGO.call_sequence = build_call_sequence(BINGO.room_name)
-  BINGO.cipher_words = build_cipher_words(BINGO.room_name)
 
-  for i = 1, #BINGO.players do
-    local p = BINGO.players[i]
-    local bought = tonumber(BINGO.cards_bought[p]) or 1
-    if bought < 1 then bought = 1 end
-    if bought > 20 then bought = 20 end
+  local preserveProgressiveCards = (BINGO.mode == "progressive" and BINGO.cards ~= nil and next(BINGO.cards) ~= nil)
+  if not preserveProgressiveCards then
+    BINGO.call_sequence = build_call_sequence(BINGO.room_name)
+    BINGO.cipher_words = build_cipher_words(BINGO.room_name)
 
-    local seed = BINGO.player_codes[p] or room_seed_text()
-    BINGO.player_seed[p] = seed
-    BINGO.cards[p] = {}
+    for i = 1, #BINGO.players do
+      local p = BINGO.players[i]
+      local bought = tonumber(BINGO.cards_bought[p]) or 1
+      if bought < 1 then bought = 1 end
+      if bought > 20 then bought = 20 end
 
-    for cardIndex = 1, bought do
-      table.insert(BINGO.cards[p], generate_bingo_card(seed, cardIndex))
+      local seed = BINGO.player_codes[p] or room_seed_text()
+      BINGO.player_seed[p] = seed
+      BINGO.cards[p] = {}
+
+      for cardIndex = 1, bought do
+        table.insert(BINGO.cards[p], generate_bingo_card(seed, cardIndex))
+      end
     end
   end
 
   BINGO.phase = "running"
   BINGO.info = "Bingo ready: " .. condition_label(active_condition_key()) .. ". Draw the first ball."
+
+  -- Apply random turn order if enabled
+  if global_random_turn_order ~= nil and global_random_turn_order() then
+    local rng = create_prng(hash_string(BINGO.room_name .. "-turnorder"))
+    local pl = BINGO.players
+    for i = #pl, 2, -1 do
+      local j = math.floor(rng() * i) + 1
+      pl[i], pl[j] = pl[j], pl[i]
+    end
+  end
 
   announce("start", { total = #BINGO.players })
   announce("room", { result = BINGO.room_name })
@@ -688,6 +874,21 @@ local function draw_next_call()
 
   local idx = tonumber(BINGO.next_call_index) or 1
   if idx > #BINGO.call_sequence then
+    local pending = {}
+    for i = 1, #BINGO.players do
+      local p = BINGO.players[i]
+      if BINGO.claimable_lookup[p] and not BINGO.winner_lookup[p] then
+        table.insert(pending, p)
+      end
+    end
+
+    if #pending > 0 then
+      BINGO.autodraw_started = false
+      BINGO.autodraw_next_ms = 0
+      BINGO.info = "All balls called | waiting bingo call from: " .. table.concat(pending, ", ")
+      return
+    end
+
     BINGO.phase = "finished"
     BINGO.info = "All balls have been called."
     return
@@ -726,6 +927,16 @@ local function draw_next_call()
   else
     BINGO.info = "Last ball: " .. label .. " | target: " .. condition_label(condition)
   end
+
+  -- After first ball, arm autodraw timer if enabled
+  if not BINGO.autodraw_started and BINGO.autodraw_enabled then
+    BINGO.autodraw_started = true
+    local interval = math.max(1000, tonumber(BINGO.autodraw_interval_ms) or 5000)
+    BINGO.autodraw_next_ms = ((time_ms ~= nil) and time_ms() or 0) + interval
+  elseif BINGO.autodraw_started and BINGO.autodraw_enabled then
+    local interval = math.max(1000, tonumber(BINGO.autodraw_interval_ms) or 5000)
+    BINGO.autodraw_next_ms = ((time_ms ~= nil) and time_ms() or 0) + interval
+  end
 end
 
 local function trim(s)
@@ -752,7 +963,11 @@ end
 
 local function is_catchup_command(message)
   local m = string.lower(trim(message))
-  return m == "catchup" or m == "!catchup" or m == "/catchup" or m == ">catchup"
+  m = string.gsub(m, "^[!/>%s]+", "")
+  m = string.gsub(m, "[^%a%s]", "")
+  m = string.gsub(m, "%s+", " ")
+  m = trim(m)
+  return m == "catchup" or m == "catch up"
 end
 
 local function is_bingo_command(message)
@@ -761,13 +976,39 @@ local function is_bingo_command(message)
   return m == "bingo" or m == "/bingo" or m == ">bingo" or m == "!bingo"
 end
 
+local function normalize_name_for_match(name)
+  local n = string.lower(tostring(name or ""))
+  n = string.gsub(n, "^%b()", "")
+  n = string.gsub(n, "^%b[]", "")
+  n = string.gsub(n, "^[^%a%d]+", "")
+  n = string.gsub(n, "@.*$", "")
+  n = string.gsub(n, "[^%a%d]", "")
+  return n
+end
+
 local function find_player_name(rawName)
+  local raw = tostring(rawName or "")
+  local rawLower = string.lower(raw)
+  local rawNorm = normalize_name_for_match(raw)
+
   for i = 1, #BINGO.players do
     local p = BINGO.players[i]
-    if string.lower(p) == string.lower(tostring(rawName or "")) then
+    local pLower = string.lower(p)
+    local pNorm = normalize_name_for_match(p)
+
+    if pLower == rawLower then
+      return p
+    end
+
+    if string.find(rawLower, pLower .. "@", 1, true) ~= nil then
+      return p
+    end
+
+    if rawNorm ~= "" and pNorm ~= "" and (rawNorm == pNorm or string.find(rawNorm, pNorm, 1, true) ~= nil or string.find(pNorm, rawNorm, 1, true) ~= nil) then
       return p
     end
   end
+
   return nil
 end
 
@@ -785,6 +1026,80 @@ local function current_catchup_code()
   end
 
   return tostring(BINGO.room_name) .. " " .. tostring(turnWord)
+end
+
+local function catchup_remaining_for_player(player)
+  local used = tonumber(BINGO.catchup_requests[player]) or 0
+  local limit = tonumber(BINGO.catchup_limit_per_player) or 1
+  if limit < 0 then limit = 0 end
+  local rem = limit - used
+  if rem < 0 then rem = 0 end
+  return rem, used, limit
+end
+
+local function send_catchup_to_player(player, worldName, force)
+  local code = current_catchup_code()
+  if code == "" then
+    send_tell(player, worldName, "Catchup unavailable right now.")
+    return false
+  end
+
+  local remaining, used, limit = catchup_remaining_for_player(player)
+  if not force and used >= limit then
+    send_tell(player, worldName, "Catchup limit reached for this round. Remaining: 0")
+    return false
+  end
+
+  local nextRemaining = remaining
+  if not force then
+    nextRemaining = remaining - 1
+    if nextRemaining < 0 then nextRemaining = 0 end
+  end
+
+  local msg = "Catchup code: " .. code .. " | remaining this round: " .. tostring(nextRemaining)
+  if force then
+    msg = msg .. " (dealer override)"
+  end
+
+  if send_tell(player, worldName, msg) then
+    if not force then
+      BINGO.catchup_requests[player] = used + 1
+    end
+    return true
+  end
+
+  return false
+end
+
+local function process_tell_queue()
+  local q = BINGO.tell_queue or {}
+  if #q == 0 then return end
+
+  local now = ((time_ms ~= nil) and time_ms() or 0)
+  local nextAt = tonumber(BINGO.tell_next_send_ms) or 0
+  if now < nextAt then return end
+
+  local item = table.remove(q, 1)
+  BINGO.tell_queue = q
+
+  if item ~= nil then
+    local sent = send_tell(item.player, item.world, item.message)
+    if sent then
+      BINGO.tell_queue_sent = (tonumber(BINGO.tell_queue_sent) or 0) + 1
+    end
+
+    local total = (tonumber(BINGO.tell_queue_sent) or 0) + #q
+    BINGO.info = "Sending links: " .. tostring(BINGO.tell_queue_sent or 0) .. " / " .. tostring(total)
+
+    if #q == 0 then
+      announce("links_sent", { total = BINGO.tell_queue_sent or 0 })
+      BINGO.info = "Sent links: " .. tostring(BINGO.tell_queue_sent or 0) .. " / " .. tostring(total)
+    end
+  end
+
+  local interval = tonumber(BINGO.tell_send_interval_ms) or 650
+  if interval < 200 then interval = 200 end
+  BINGO.tell_next_send_ms = now + interval
 end
 
 local function maybe_process_chat()
@@ -805,22 +1120,7 @@ local function maybe_process_chat()
         if worldName == "" then worldName = "Unknown" end
 
         if is_catchup_command(message) then
-          local used = tonumber(BINGO.catchup_requests[player]) or 0
-          local limit = tonumber(BINGO.catchup_limit_per_player) or 1
-          if limit < 0 then limit = 0 end
-
-          if used >= limit then
-            send_tell(player, worldName, "Catchup limit reached for this round.")
-          else
-            local code = current_catchup_code()
-            if code == "" then
-              send_tell(player, worldName, "Catchup unavailable right now.")
-            else
-              if send_tell(player, worldName, "Catchup code: " .. code) then
-                BINGO.catchup_requests[player] = used + 1
-              end
-            end
-          end
+          send_catchup_to_player(player, worldName, false)
         elseif is_bingo_command(message) then
           local condition = active_condition_key()
           if (not BINGO.winner_lookup[player]) and BINGO.claimable_lookup[player] and player_has_condition(player, condition) then
@@ -843,6 +1143,9 @@ local function maybe_process_chat()
                 payout = payout,
               })
 
+              BINGO.autodraw_started = false
+              BINGO.autodraw_next_ms = 0
+
               BINGO.progressive_round_index = roundIdx + 1
               if BINGO.progressive_round_index > #BINGO.progressive_playlist then
                 BINGO.phase = "finished"
@@ -851,7 +1154,7 @@ local function maybe_process_chat()
                 BINGO.winners = {}
                 BINGO.winner_lookup = {}
                 BINGO.claimable_lookup = {}
-                BINGO.info = "Progressive advanced to: " .. condition_label(active_condition_key())
+                BINGO.info = "Progressive advanced to: " .. condition_label(active_condition_key()) .. " (autocall paused)"
               end
             end
           else
@@ -864,7 +1167,16 @@ local function maybe_process_chat()
 end
 
 function draw_ui()
+  process_tell_queue()
   maybe_process_chat()
+
+  -- Autodraw tick
+  if BINGO.phase == "running" and BINGO.autodraw_enabled and BINGO.autodraw_started then
+    local now = (time_ms ~= nil) and time_ms() or 0
+    if now >= (BINGO.autodraw_next_ms or 0) then
+      draw_next_call()
+    end
+  end
 
   ui_text_colored("Bingo", 1.0, 0.9, 0.4, 1.0)
   ui_separator()
@@ -876,9 +1188,27 @@ function draw_ui()
 
   if ui_button("New Round##new") then start_round() end
   ui_same_line()
-  if ui_button("Draw Next Ball##draw") then draw_next_call() end
+  if ui_button("Draw Next Ball##draw") then
+    local wasPausedAutocall = BINGO.autodraw_enabled and (BINGO.autodraw_started ~= true)
+    draw_next_call()
+    if wasPausedAutocall and BINGO.autodraw_enabled and BINGO.phase == "running" then
+      if chat_send ~= nil then
+        chat_send("echo", "(autocall taking over)")
+      else
+        log_info("(autocall taking over)")
+      end
+    end
+  end
   ui_same_line()
   if ui_button("Resend Links##resend") then send_links_to_players() end
+  if BINGO.autodraw_enabled and BINGO.autodraw_started then
+    ui_same_line()
+    if ui_button("Autocall Off##autocall_off") then
+      BINGO.autodraw_started = false
+      BINGO.autodraw_next_ms = 0
+      BINGO.info = "Autocall paused."
+    end
+  end
 
   ui_text("Status: " .. tostring(BINGO.phase) .. " | " .. tostring(BINGO.info))
   ui_text("Catchup code: " .. tostring(current_catchup_code()))
@@ -922,6 +1252,17 @@ function draw_ui()
 
   ui_separator()
   ui_text_colored("Dealer Card View", 0.9, 0.95, 1.0, 1.0)
+  if BINGO.dealer_view_collapsed == true then
+    if ui_button("Show Dealer Card View##dealer_view_toggle") then
+      BINGO.dealer_view_collapsed = false
+    end
+    return
+  else
+    if ui_button("Hide Dealer Card View##dealer_view_toggle") then
+      BINGO.dealer_view_collapsed = true
+      return
+    end
+  end
 
   if #BINGO.players == 0 then
     ui_text("(no active round)")
@@ -965,6 +1306,15 @@ function draw_ui()
     BINGO.selected_card = BINGO.selected_card + 1
     if BINGO.selected_card > #list then BINGO.selected_card = 1 end
   end
+  ui_same_line()
+  if ui_button("Send Catchup##dealer_view_send_catchup") then
+    local worldName = (dealer_get_world ~= nil) and tostring(dealer_get_world(p) or "Unknown") or "Unknown"
+    if send_catchup_to_player(p, worldName, true) then
+      BINGO.info = "Catchup override sent to " .. tostring(p)
+    else
+      BINGO.info = "Catchup override failed for " .. tostring(p)
+    end
+  end
 
   ui_text("Card " .. tostring(BINGO.selected_card) .. " / " .. tostring(#list))
   local card = list[BINGO.selected_card]
@@ -972,15 +1322,31 @@ function draw_ui()
     draw_card(card, p, BINGO.selected_card)
   else
     local cols = { "B", "I", "N", "G", "O" }
+    -- Header row
+    for col = 1, 5 do
+      local lbl = "  " .. cols[col] .. "  "
+      ui_button_colored_sized(lbl .. "##bingo_hdr_" .. tostring(col), 46, 0, 0.18, 0.22, 0.30, 1.0)
+      if col < 5 then ui_same_line() end
+    end
+    -- Cell rows
     for row = 1, 5 do
-      local rowParts = {}
       for col = 1, 5 do
         local key = cols[col]
         local v = card.values[key][row]
-        local marked = card.marks[key][row] and "*" or " "
-        table.insert(rowParts, string.format("%s%3s", marked, tostring(v)))
+        local marked = card.marks[key][row]
+        local lbl
+        if v == "FREE" then
+          lbl = " FREE##bingo_cell_" .. tostring(col) .. "_" .. tostring(row)
+          ui_button_colored_sized(lbl, 46, 0, 0.15, 0.55, 0.15, 1.0)
+        elseif marked then
+          lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
+          ui_button_colored_sized(lbl, 46, 0, 0.10, 0.55, 0.10, 1.0)
+        else
+          lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
+          ui_button_colored_sized(lbl, 46, 0, 0.20, 0.22, 0.28, 1.0)
+        end
+        if col < 5 then ui_same_line() end
       end
-      ui_text(table.concat(rowParts, "  "))
     end
   end
 end
@@ -996,183 +1362,30 @@ function draw_config_ui()
   if lim < 0 then lim = 0 end
   if lim > 20 then lim = 20 end
   BINGO.catchup_limit_per_player = lim
-end
 
-draw_purchase_controls = function()
-  sync_buyers_from_roster()
-
-  ui_text_colored("Card Purchases", 0.9, 0.95, 1.0, 1.0)
-  ui_text("Player                          Cards  Controls")
-
-  local count = dealer_player_count()
-  local shown = 0
-  for i = 1, count do
-    local p = dealer_player_name(i)
-    if p ~= nil and p ~= "" and dealer_is_eligible(p) then
-      shown = shown + 1
-      local cards = tonumber(BINGO.cards_bought[p]) or 1
-      if cards < 1 then cards = 1 end
-      if cards > 20 then cards = 20 end
-      BINGO.cards_bought[p] = cards
-
-      ui_text(string.format("%-28s %2d", p, cards))
-      ui_same_line()
-      if ui_button("-##bingo_buy_minus_" .. tostring(i)) then
-        cards = cards - 1
-        if cards < 1 then cards = 1 end
-        BINGO.cards_bought[p] = cards
-      end
-      ui_same_line()
-      if ui_button("+##bingo_buy_plus_" .. tostring(i)) then
-        cards = cards + 1
-        if cards > 20 then cards = 20 end
-        BINGO.cards_bought[p] = cards
-      end
-    end
-  end
-
-  if shown == 0 then ui_text("(no eligible players)") end
-end
-
-local function ensure_playlist_defaults()
-  if BINGO.progressive_playlist == nil or #BINGO.progressive_playlist == 0 then
-    BINGO.progressive_playlist = { "1_line", "2_line", "4_corners", "blackout" }
-  end
-end
-
-local function apply_progressive_preset(preset)
-  if preset == "fast" then
-    BINGO.progressive_playlist = { "1_line", "4_corners", "blackout" }
-    BINGO.progressive_carryover_enabled = false
-    BINGO.progressive_carryover_percent = 20
-  elseif preset == "balanced" then
-    BINGO.progressive_playlist = { "1_line", "2_line", "inside_square", "outside_square", "blackout" }
-    BINGO.progressive_carryover_enabled = false
-    BINGO.progressive_carryover_percent = 20
-  elseif preset == "jackpot" then
-    BINGO.progressive_playlist = { "1_line", "2_line", "4_corners", "inside_square", "outside_square", "blackout" }
-    BINGO.progressive_carryover_enabled = true
-    BINGO.progressive_carryover_percent = 50
-  end
-
-  BINGO.progressive_round_index = 1
-  recalc_suggested_payouts()
-end
-
-draw_mode_controls = function()
-  ensure_playlist_defaults()
-
-  ui_text_colored("Game Type", 0.9, 0.95, 1.0, 1.0)
-  if ui_button("Single##bingo_mode_single") then
-    BINGO.mode = "single"
-    recalc_suggested_payouts()
-  end
-  ui_same_line()
-  if ui_button("Progressive##bingo_mode_prog") then
-    BINGO.mode = "progressive"
-    recalc_suggested_payouts()
-  end
-
-  ui_text("Mode: " .. BINGO.mode)
+  local house = tonumber(BINGO.house_take_percent) or 10
+  house = ui_input_int("House take percent##bingo_house_take", house)
+  if house < 0 then house = 0 end
+  if house > 50 then house = 50 end
+  BINGO.house_take_percent = house
 
   ui_separator()
-  ui_text("Single condition")
-
-  local currentSingleIndex = 1
-  for i = 1, #CONDITION_KEYS do
-    if CONDITION_KEYS[i] == BINGO.single_condition then
-      currentSingleIndex = i
-      break
-    end
-  end
-
-  if ui_button("<##single_prev") then
-    currentSingleIndex = currentSingleIndex - 1
-    if currentSingleIndex < 1 then currentSingleIndex = #CONDITION_KEYS end
-    BINGO.single_condition = CONDITION_KEYS[currentSingleIndex]
-  end
-  ui_same_line()
-  ui_text("[ " .. condition_label(BINGO.single_condition) .. " ]")
-  ui_same_line()
-  if ui_button(">##single_next") then
-    currentSingleIndex = currentSingleIndex + 1
-    if currentSingleIndex > #CONDITION_KEYS then currentSingleIndex = 1 end
-    BINGO.single_condition = CONDITION_KEYS[currentSingleIndex]
-  end
-
-  if BINGO.mode == "progressive" then
-    ui_separator()
-    ui_text("Progressive presets")
-    if ui_button("Fast##preset_fast") then apply_progressive_preset("fast") end
-    ui_same_line()
-    if ui_button("Balanced##preset_bal") then apply_progressive_preset("balanced") end
-    ui_same_line()
-    if ui_button("Jackpot-heavy##preset_jp") then apply_progressive_preset("jackpot") end
-
-    ui_separator()
-    ui_text("Playlist")
-    for i = 1, #BINGO.progressive_playlist do
-      ui_text(tostring(i) .. ") " .. condition_label(BINGO.progressive_playlist[i]))
-      ui_same_line()
-      if ui_button("x##pl_rm_" .. tostring(i)) then
-        table.remove(BINGO.progressive_playlist, i)
-        ensure_playlist_defaults()
-        recalc_suggested_payouts()
-        break
-      end
-    end
-
-    ui_text("Add to playlist")
-    local addIdx = tonumber(BINGO.condition_picker_progressive) or 1
-    if addIdx < 1 then addIdx = 1 end
-    if addIdx > #CONDITION_KEYS then addIdx = #CONDITION_KEYS end
-
-    if ui_button("<##pl_pick_prev") then
-      addIdx = addIdx - 1
-      if addIdx < 1 then addIdx = #CONDITION_KEYS end
-      BINGO.condition_picker_progressive = addIdx
-    end
-    ui_same_line()
-    ui_text("[ " .. condition_label(CONDITION_KEYS[addIdx]) .. " ]")
-    ui_same_line()
-    if ui_button(">##pl_pick_next") then
-      addIdx = addIdx + 1
-      if addIdx > #CONDITION_KEYS then addIdx = 1 end
-      BINGO.condition_picker_progressive = addIdx
-    end
-    ui_same_line()
-    if ui_button("Add##pl_add") then
-      table.insert(BINGO.progressive_playlist, CONDITION_KEYS[addIdx])
-      recalc_suggested_payouts()
-    end
-
-    ui_separator()
-    local carry = BINGO.progressive_carryover_enabled == true
-    carry = ui_checkbox("Use Carryover Payout Model", carry)
-    BINGO.progressive_carryover_enabled = carry
-
-    local pct = tonumber(BINGO.progressive_carryover_percent) or 20
-    pct = ui_input_int("Carryover % per round##carry_pct", pct)
-    if pct < 0 then pct = 0 end
-    if pct > 90 then pct = 90 end
-    BINGO.progressive_carryover_percent = pct
+  ui_text_colored("Autodraw", 0.9, 0.95, 1.0, 1.0)
+  BINGO.autodraw_enabled = ui_checkbox("Auto-drop balls every X seconds##autodraw_enable", BINGO.autodraw_enabled == true)
+  if BINGO.autodraw_enabled then
+    local iv = math.max(1, math.floor((tonumber(BINGO.autodraw_interval_ms) or 5000) / 1000))
+    iv = ui_input_int("Drop interval (seconds)##autodraw_interval", iv)
+    if iv < 1 then iv = 1 end
+    if iv > 300 then iv = 300 end
+    BINGO.autodraw_interval_ms = iv * 1000
+    ui_text("Autodraw only begins after the dealer draws the first ball manually.")
   end
 
   ui_separator()
-  local pot = tonumber(BINGO.pot_size) or 0
-  pot = ui_input_int("Pot Size##pot", pot)
-  if pot < 0 then pot = 0 end
-  BINGO.pot_size = pot
-  recalc_suggested_payouts()
-
-  ui_text_colored("Suggested Payouts", 0.85, 1.0, 0.85, 1.0)
-  if BINGO.mode ~= "progressive" then
-    ui_text("(shown for progressive rounds only)")
+  ui_text_colored("Turn Order", 0.9, 0.95, 1.0, 1.0)
+  if global_random_turn_order ~= nil and global_random_turn_order() then
+    ui_text("Random turn order is ON (set in global Config tab).")
   else
-    for i = 1, #BINGO.progressive_playlist do
-      local label = condition_label(BINGO.progressive_playlist[i])
-      local amount = tonumber(BINGO.suggested_payouts[i]) or 0
-      ui_text(string.format("R%-2d %-16s %d", i, label, amount))
-    end
+    ui_text("Turn order: first joined = top, last joined = bottom. (Set in global Config tab.)")
   end
 end

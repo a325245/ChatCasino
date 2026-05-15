@@ -20,6 +20,8 @@ if TH == nil then
     turn_roll_count = 0,
     ready_to_end_turn = false,
     auto_held_this_batch = 0,
+    retry_cooldown_ms = 250,
+    retry_next_ms = 0,
 
     play_vs_dealer = true,
     dealer_score = nil,
@@ -27,12 +29,17 @@ if TH == nil then
     dealer_ai = nil,
 
     dice_channel = "party",
-    dealer_rolls_for_players = false,
+    dealer_rolls_for_players = true,
 
     chat_templates = {
       round_start = "Threes begins with <total> players.",
       turn_start = "<player>'s turn starts.",
       turn_score = "<player> locks in a score of <total>.",
+      -- default instructs to use party channel; user can edit in config
+      roll_request = "<player>, roll <total> dice using \"/dice party 6\".",
+      roll_count = "Rolling <total> dice for <player>.",
+      roll_result = "",
+      roll_hold_and_count = "<player> running total so far: <total>. Rolling <result> dice.",
       winner = "Threes winner: <result> with <total>.",
     }
   }
@@ -50,16 +57,33 @@ end
 
 local function normalize_channel(ch)
   local c = string.lower(tostring(ch or "party"))
-  if c ~= "echo" and c ~= "say" and c ~= "party" then
+  if c ~= "echo" and c ~= "say" and c ~= "party" and c ~= "shout" and c ~= "yell" then
     return "party"
   end
   return c
 end
 
+local function normalize_player_name(name)
+  local n = string.lower(tostring(name or ""))
+  n = string.gsub(n, "@.*$", "")
+  n = string.gsub(n, "^%s+", "")
+  n = string.gsub(n, "%s+$", "")
+  -- remove non-alphanumeric to better match variants (brackets, punctuation, Random! bot, etc.)
+  n = string.gsub(n, "[^%a%d]", "")
+  return n
+end
+
+local function names_match_loose(a, b)
+  local na = normalize_player_name(a)
+  local nb = normalize_player_name(b)
+  if na == "" or nb == "" then return false end
+  if na == nb then return true end
+  return (string.find(na, nb, 1, true) ~= nil) or (string.find(nb, na, 1, true) ~= nil)
+end
+
 local function table_announce(message)
   local msg = message or ""
   if msg == "" then return end
-
   if chat_send ~= nil then
     chat_send(output_channel_name(), msg)
   else
@@ -103,7 +127,14 @@ local function announce(key, ctx)
   local t = TH.chat_templates or {}
   local template = t[key]
   if template == nil or template == "" then return end
-  table_announce(fmt(template, ctx))
+  local msg = fmt(template, ctx)
+  -- Prefer the per-game dice_channel when available
+  local ch = (TH and TH.dice_channel) and normalize_channel(TH.dice_channel) or nil
+  if ch ~= nil and chat_send ~= nil then
+    chat_send(ch, msg)
+  else
+    table_announce(msg)
+  end
 end
 
 local function active_player_name()
@@ -131,14 +162,12 @@ local function reset_turn_dice()
   TH.turn_roll_count = 0
   TH.ready_to_end_turn = false
   TH.auto_held_this_batch = 0
+  TH.retry_next_ms = 0
   TH.dealer_ai = nil
 end
 
 local function effective_roll_delay_ms()
-  local v = tonumber(TH.roll_delay_ms) or 125
-  if v < 50 then v = 50 end
-  if v > 5000 then v = 5000 end
-  TH.roll_delay_ms = math.floor(v)
+  TH.roll_delay_ms = 1000
   return TH.roll_delay_ms
 end
 
@@ -216,25 +245,24 @@ local function finalize_vs_dealer_round()
 
     local wager = (dealer_get_wager ~= nil) and (tonumber(dealer_get_wager(p)) or 0) or 0
     local delta = 0
-    local payout_mult = 0
-    local margin = (tonumber(TH.dealer_score) or 0) - s
-    
+    local payoutLabel = ""
+    local payoutReason = ""
+
     if wager > 0 then
       if outcome == "wins" then
         if s == 0 then
-          payout_mult = 25
-        elseif margin >= 20 then
-          payout_mult = 10
-        elseif margin >= 15 then
-          payout_mult = 5
-        elseif margin >= 10 then
-          payout_mult = 3
-        elseif margin >= 5 then
-          payout_mult = 2
+          delta = wager * 5
+          payoutLabel = "5:1"
+          payoutReason = "Triple Zero bonus"
+        elseif s >= 1 and s <= 3 then
+          delta = math.floor((wager * 3) / 2)
+          payoutLabel = "3:2"
+          payoutReason = "Low-Roll incentive"
         else
-          payout_mult = 1
+          delta = wager
+          payoutLabel = "1:1"
+          payoutReason = "Standard Win"
         end
-        delta = wager * payout_mult
       elseif outcome == "loses" then
         delta = -wager
       end
@@ -245,15 +273,13 @@ local function finalize_vs_dealer_round()
       dealer_add_bank(p, delta)
       local bankNow = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(p)) or 0) or 0
       local sign = delta > 0 and "+" or ""
-      bankText = " | bank " .. sign .. tostring(delta) .. ") => " .. tostring(bankNow)
+      bankText = " | bank " .. sign .. tostring(delta) .. " => " .. tostring(bankNow)
     end
 
-    if outcome == "wins" and payout_mult > 0 then
-      if payout_mult == 25 then
-        table_announce(p .. " hits the JACKPOT (0 vs dealer) at 25:1!")
-      else
-        table_announce(p .. " wins at " .. tostring(payout_mult) .. ":1 (margin " .. tostring(margin) .. ").")
-      end
+    if outcome == "wins" and payoutLabel ~= "" then
+      table_announce(p .. " wins " .. payoutLabel .. " (" .. payoutReason .. ").")
+    elseif outcome == "pushes" then
+      table_announce(p .. " pushes (tie = push).")
     end
 
     table_announce(p .. " " .. outcome .. " vs dealer (" .. tostring(s) .. " vs " .. tostring(TH.dealer_score) .. ")." .. bankText)
@@ -344,7 +370,8 @@ local function process_dealer_ai_turn()
     end
 
     if (not ai.roll_inflight) and #ai.pending_slots > 0 and now >= (ai.next_action_ms or 0) then
-      if dice_command == nil or not dice_command("party", 6) then
+      local channel = normalize_channel(TH.dice_channel)
+      if dice_command == nil or not dice_command(channel, 6) then
         TH.info = "Dealer dice command unavailable."
         TH.dealer_ai = nil
         TH.phase = "finished"
@@ -502,6 +529,8 @@ local function finish_round()
   announce("winner", { result = who, total = best or 0 })
 end
 
+local request_roll_for_unheld
+
 local function finish_turn()
   local player = active_player_name()
   if player == "" then return end
@@ -550,11 +579,38 @@ local function start_round()
   TH.info = active_player_name() .. " to roll."
   announce("round_start", { total = #TH.order })
   announce("turn_start", { player = active_player_name() })
+  -- Immediately prompt the active player to roll
+  request_roll_for_unheld()
 end
 
-local function request_roll_for_unheld()
-  if TH.phase ~= "turn_active" then return end
-  if TH.awaiting_rolls then return end
+request_roll_for_unheld = function()
+  if TH.phase ~= "turn_active" then
+    TH.info = "Round is not in an active turn."
+    return
+  end
+
+  -- If already waiting on rolls, treat button press as a retry nudge with cooldown.
+  if TH.awaiting_rolls then
+    local now = (time_ms ~= nil) and time_ms() or 0
+    local retryAt = tonumber(TH.retry_next_ms) or 0
+    if now < retryAt then
+      local remain = math.floor((retryAt - now) / 1000)
+      if remain < 1 then remain = 1 end
+      TH.info = "Retry on cooldown (" .. tostring(remain) .. "s)."
+      return
+    end
+
+    TH.roll_inflight = false
+    TH.roll_sent_ms = 0
+    TH.next_roll_ms = now
+    local cd = tonumber(TH.retry_cooldown_ms) or 250
+    if cd < 100 then cd = 100 end
+    if cd > 5000 then cd = 5000 end
+    TH.retry_next_ms = now + cd
+    TH.info = "Retrying roll dispatch..."
+    return
+  end
+
   if TH.must_hold_after_roll and held_count() == 0 then
     TH.info = "You must hold at least one die before rolling again."
     return
@@ -589,10 +645,21 @@ local function request_roll_for_unheld()
   TH.turn_roll_count = (tonumber(TH.turn_roll_count) or 0) + 1
   TH.auto_held_this_batch = 0
   TH.ready_to_end_turn = false
-  if TH.dealer_rolls_for_players then
-    TH.info = active_player_name() .. " rolling " .. tostring(#TH.pending_slots) .. " dice..."
-  else
-    TH.info = active_player_name() .. " roll /dice 6 for " .. tostring(#TH.pending_slots) .. " dice..."
+  TH.info = active_player_name() .. " rolling " .. tostring(#TH.pending_slots) .. " dice..."
+
+  local heldTotalNow = held_score_so_far()
+  local rollNo = tonumber(TH.turn_roll_count) or 0
+
+  -- Keep chat quieter:
+  -- - first roll: no extra roll line (round_start + turn_start already announced)
+  -- - later rolls: one line only, then wait 1s before first die dispatch
+  if rollNo >= 2 then
+    if heldTotalNow > 0 then
+      announce("roll_hold_and_count", { player = active_player_name(), total = heldTotalNow, result = #TH.pending_slots })
+    else
+      announce("roll_count", { player = active_player_name(), total = #TH.pending_slots })
+    end
+    TH.next_roll_ms = ((time_ms ~= nil) and time_ms() or 0) + effective_roll_delay_ms()
   end
 end
 
@@ -618,11 +685,7 @@ local function process_dice_chat()
     TH.next_roll_ms = now + 120
   end
 
-  local waitingForPlayerRoll = TH.dealer_rolls_for_players ~= true
-
-  if waitingForPlayerRoll then
-    TH.roll_inflight = true
-  elseif (not TH.roll_inflight) and #TH.pending_slots > 0 and now >= (TH.next_roll_ms or 0) then
+  if (not TH.roll_inflight) and #TH.pending_slots > 0 and now >= (TH.next_roll_ms or 0) then
     local channel = normalize_channel(TH.dice_channel)
     if dice_command == nil or not dice_command(channel, 6) then
       TH.info = "Dice command unavailable."
@@ -645,15 +708,15 @@ local function process_dice_chat()
     if message ~= nil then
       local rolled = (dice_roll_value ~= nil) and dice_roll_value(message) or 0
       local upper = (dice_roll_upper ~= nil) and dice_roll_upper(message) or 0
+      -- If the Random! bot embeds the player name in the message like "(Player) Random! (1-6) 3",
+      -- prefer that embedded name for attribution instead of the sender (Random!).
+      local embedded = string.match(message, "^%s*%(([^)]+)%)%s*Random!") or string.match(message, "^%s*%(([^)]+)%)")
+      local senderForMatch = name
+      if embedded and embedded ~= "" then
+        senderForMatch = embedded
+      end
 
       if rolled >= 1 and rolled <= 6 and upper == 6 then
-        if waitingForPlayerRoll then
-          local active = active_player_name()
-          if active ~= "" and string.lower(tostring(name or "")) ~= string.lower(active) then
-            goto continue_packet
-          end
-        end
-
         local slot = table.remove(TH.pending_slots, 1)
         local d = TH.dice[slot]
         d.value = rolled
@@ -675,7 +738,7 @@ local function process_dice_chat()
 
         TH.roll_inflight = false
         TH.roll_sent_ms = 0
-        TH.next_roll_ms = ((time_ms ~= nil) and time_ms() or now) + 20
+        TH.next_roll_ms = ((time_ms ~= nil) and time_ms() or now) + effective_roll_delay_ms()
         break
       end
     end
@@ -704,7 +767,6 @@ local function process_dice_chat()
   local showHeldTotal = ((tonumber(TH.turn_roll_count) or 0) >= 2) and (heldNow > 0)
 
   if showHeldTotal then
-    table_announce(active_player_name() .. " held total so far: " .. tostring(heldTotal) .. ".")
     local prefix = "Held total so far: " .. tostring(heldTotal) .. ". "
     if TH.must_hold_after_roll then
       TH.info = prefix .. "Hold at least one die, then roll remaining dice."
@@ -821,26 +883,33 @@ function draw_config_ui()
   if ui_button("Use Say##th_cfg_say") then TH.dice_channel = "say" end
   ui_same_line()
   if ui_button("Use Party##th_cfg_party") then TH.dice_channel = "party" end
+  ui_same_line()
+  if ui_button("Use Shout##th_cfg_shout") then TH.dice_channel = "shout" end
+  ui_same_line()
+  if ui_button("Use Yell##th_cfg_yell") then TH.dice_channel = "yell" end
 
-  local dealerRolls = TH.dealer_rolls_for_players == true
-  dealerRolls = ui_checkbox("Dealer rolls for players", dealerRolls)
-  TH.dealer_rolls_for_players = dealerRolls
-
-  local rollDelay = effective_roll_delay_ms()
-  rollDelay = ui_input_int("Roll delay (ms)##th_roll_delay", rollDelay)
-  TH.roll_delay_ms = rollDelay
-  effective_roll_delay_ms()
-  if TH.dealer_rolls_for_players then
-    ui_text("Used for dealer roll pacing and dealer narration pacing.")
-  else
-    ui_text("Dealer roll pacing disabled for player turns; players roll their own /dice 6.")
-  end
+  TH.dealer_rolls_for_players = true
+  ui_text("Dealer rolls all dice for players.")
+  ui_text("Roll pacing is fixed at 1 second between each die roll.")
 
   local vsDealer = TH.play_vs_dealer ~= false
   vsDealer = ui_checkbox("Players vs Dealer AI", vsDealer)
   TH.play_vs_dealer = vsDealer
 
   ui_text("Rules: Roll 5 dice. Keep at least one each roll. 3s auto-hold and score 0. Lowest total wins.")
+
+  ui_separator()
+  ui_text_colored("Chat templates (editable)", 0.8, 0.95, 0.8, 1.0)
+  local t = TH.chat_templates or {}
+  t.round_start = ui_input_text("Round start template##th_tpl_round_start", t.round_start or "", 256)
+  t.turn_start = ui_input_text("Turn start template##th_tpl_turn_start", t.turn_start or "", 256)
+  t.turn_score = ui_input_text("Turn score template##th_tpl_turn_score", t.turn_score or "", 256)
+  t.roll_request = ui_input_text("Roll request template##th_tpl_rollreq", t.roll_request or "", 256)
+  t.roll_count = ui_input_text("Roll count template##th_tpl_rollcount", t.roll_count or "", 256)
+  t.roll_result = ui_input_text("Roll result template##th_tpl_rollres", t.roll_result or "", 256)
+  t.roll_hold_and_count = ui_input_text("Roll hold+count template##th_tpl_roll_hold_count", t.roll_hold_and_count or "", 256)
+  t.winner = ui_input_text("Winner template##th_tpl_winner", t.winner or "", 256)
+  TH.chat_templates = t
 end
 
 function draw_ui()
@@ -856,11 +925,7 @@ function draw_ui()
 
   ui_text_colored("--- INSTRUCTIONS ---", 0.7, 1.0, 0.7, 1.0)
   ui_text("1) Click New Round to start.")
-  if TH.dealer_rolls_for_players then
-    ui_text("2) On your turn, click Roll Unheld Dice.")
-  else
-    ui_text("2) On your turn, roll /dice 6 in chat until all unheld slots are filled.")
-  end
+  ui_text("2) On your turn, the dealer clicks Roll Unheld Dice.")
   ui_text("3) Hold at least one die between rolls.")
   ui_text("4) 3s auto-hold and count as 0 points.")
   ui_text("5) End Turn when all 5 dice are locked.")
@@ -886,8 +951,8 @@ function draw_ui()
   local current = active_player_name()
   if current ~= "" then
     ui_text("Active player: " .. current)
-    if TH.phase == "turn_active" and TH.awaiting_rolls and TH.dealer_rolls_for_players ~= true then
-      ui_text("Waiting for " .. current .. " to roll /dice 6...")
+    if TH.phase == "turn_active" and TH.awaiting_rolls then
+      ui_text("Dealer is rolling dice for " .. current .. "...")
     end
   end
 

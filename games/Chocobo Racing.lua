@@ -11,6 +11,7 @@ if CR == nil then
     race_start_ms = 0,
     race_duration_ms = 30000,
     commentary_interval_ms = 5000,
+    track_width = 75,
     last_segment = 0,
     last_leader_id = nil,
     track_max_progress = 1,
@@ -236,7 +237,10 @@ local function lead_change_text(newLeader, oldLeader)
 end
 
 local function build_track_line(sortedDesc)
-  local width = 75
+  local width = tonumber(CR.track_width) or 75
+  if width < 30 then width = 30 end
+  if width > 150 then width = 150 end
+  width = math.floor(width)
   local chars = {}
   for i = 1, width do chars[i] = "-" end
 
@@ -663,11 +667,42 @@ local function process_race_tick()
   end
 end
 
+function on_command(cmd, ...)
+  local command = string.lower(tostring(cmd or ""))
+
+  if command == "generate" then
+    generate_field()
+    return "ok"
+  end
+
+  if command == "openbets" then
+    open_betting()
+    return "ok"
+  end
+
+  if command == "start" then
+    start_race()
+    return "ok"
+  end
+
+  return "unknown"
+end
+
 function draw_config_ui()
   ui_text_colored("Chocobo Racing Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
-  ui_text("Race duration: 30 seconds")
-  ui_text("Commentary interval: every 5 seconds")
+
+  local width = ui_input_int("Track width (chars)", tonumber(CR.track_width) or 75)
+  if width < 30 then width = 30 end
+  if width > 150 then width = 150 end
+  CR.track_width = width
+
+  local raceSeconds = ui_input_int("Race length (seconds)", math.floor((tonumber(CR.race_duration_ms) or 30000) / 1000))
+  if raceSeconds < 10 then raceSeconds = 10 end
+  if raceSeconds > 180 then raceSeconds = 180 end
+  CR.race_duration_ms = raceSeconds * 1000
+
+  ui_text("Commentary interval: every " .. tostring(math.floor((tonumber(CR.commentary_interval_ms) or 5000) / 1000)) .. " seconds")
   ui_text("Field size: 6 racers from a generated pool of 36")
 end
 
