@@ -517,8 +517,24 @@ local function do_double()
   local p = MBJ.players[name]
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
+  
   if not can_double(name, p, h) then
-    MBJ.info = "Double not allowed for current hand."
+    local reason = "Double down not allowed for current hand."
+    if not MBJ.config.allow_double then
+      reason = "Double down is disabled in settings."
+    elseif #h.cards ~= 2 or h.doubled then
+      reason = "Can only double down on an initial 2-card hand."
+    elseif h.from_split == true and not MBJ.config.allow_double_after_split then
+      reason = "Double down after split is disabled."
+    else
+      local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
+      local wager = tonumber(h.wager) or 0
+      if bank < wager then
+        reason = "Insufficient bank balance to double down (Needs " .. tostring(wager) .. ", Has " .. tostring(bank) .. ")."
+      end
+    end
+    MBJ.info = reason
+    table_announce(name .. " cannot double down: " .. reason)
     return
   end
 
@@ -556,8 +572,31 @@ local function do_split()
   local p = MBJ.players[name]
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
+  
   if not can_split(name, p, h) then
-    MBJ.info = "Split not allowed for current hand."
+    local reason = "Split not allowed for current hand."
+    if p.splits_used >= (MBJ.config.max_splits or 0) then
+      reason = "Maximum split limit reached (" .. tostring(MBJ.config.max_splits) .. ")."
+    elseif #h.cards ~= 2 then
+      reason = "Can only split on an initial 2-card hand."
+    elseif tonumber(h.cards[1]) == 1 and not MBJ.config.split_aces then
+      reason = "Splitting Aces is disabled."
+    else
+      local c1 = tonumber(h.cards[1]) or 0
+      local c2 = tonumber(h.cards[2]) or 0
+      local sameRank = (c1 == c2)
+      local bothTenValue = (card_value(c1) == 10 and card_value(c2) == 10)
+      local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
+      local wager = tonumber(h.wager) or 0
+      
+      if not sameRank and not bothTenValue then
+        reason = "Cards must be equal rank or value to split."
+      elseif bank < wager then
+        reason = "Insufficient bank balance to split (Needs " .. tostring(wager) .. ", Has " .. tostring(bank) .. ")."
+      end
+    end
+    MBJ.info = reason
+    table_announce(name .. " cannot split: " .. reason)
     return
   end
 
