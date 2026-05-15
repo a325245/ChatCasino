@@ -18,8 +18,9 @@ if MBJ == nil then
     },
     draw = {
       channel = "party",
-      delay_ms = 120,
+      delay_ms = 1000,
       initial_deal_delay_ms = 1000,
+      reveal_delay_ms = 1000,
       timeout_ms = 1500,
       pending = {},
       active = nil,
@@ -27,6 +28,9 @@ if MBJ == nil then
       sent_ms = 0,
       next_ms = 0,
       next_delay_ms = nil,
+      resolved_cb = nil,
+      resolved_roll = nil,
+      resolved_at = 0,
     },
     chat_templates = {
       start = "Macro blackjack round started for <total> players.",
@@ -218,6 +222,14 @@ local function effective_draw_timeout_ms()
   return MBJ.draw.timeout_ms
 end
 
+local function effective_reveal_delay_ms()
+  local v = tonumber(MBJ.draw.reveal_delay_ms) or 1000
+  if v < 100 then v = 100 end
+  if v > 5000 then v = 5000 end
+  MBJ.draw.reveal_delay_ms = math.floor(v)
+  return MBJ.draw.reveal_delay_ms
+end
+
 local function enqueue_draw(on_card)
   if on_card == nil then return end
   table.insert(MBJ.draw.pending, on_card)
@@ -229,16 +241,27 @@ local function process_pending_draws()
 
   effective_draw_timeout_ms()
   effective_initial_deal_delay_ms()
+  effective_reveal_delay_ms()
 
-  if d.active == nil and #d.pending > 0 then
+  local now = (time_ms ~= nil) and time_ms() or 0
+
+  if d.resolved_cb ~= nil and now >= (d.resolved_at or 0) then
+    local cb = d.resolved_cb
+    local rolled = d.resolved_roll
+    d.resolved_cb = nil
+    d.resolved_roll = nil
+    d.resolved_at = 0
+    if cb ~= nil then cb(rolled) end
+    now = (time_ms ~= nil) and time_ms() or now
+  end
+
+  if d.active == nil and d.resolved_cb == nil and #d.pending > 0 then
     d.active = table.remove(d.pending, 1)
     d.inflight = false
     d.sent_ms = 0
   end
 
   if d.active == nil then return end
-
-  local now = (time_ms ~= nil) and time_ms() or 0
 
   if d.inflight and (now - (d.sent_ms or 0)) >= effective_draw_timeout_ms() then
     d.inflight = false
@@ -253,6 +276,9 @@ local function process_pending_draws()
       d.pending = {}
       d.active = nil
       d.inflight = false
+      d.resolved_cb = nil
+      d.resolved_roll = nil
+      d.resolved_at = 0
       return
     end
     d.inflight = true
@@ -275,7 +301,11 @@ local function process_pending_draws()
         local nextDelay = tonumber(d.next_delay_ms) or effective_draw_delay_ms()
         d.next_delay_ms = nil
         d.next_ms = ((time_ms ~= nil) and time_ms() or now) + nextDelay
-        if cb ~= nil then cb(rolled) end
+        if cb ~= nil then
+          d.resolved_cb = cb
+          d.resolved_roll = rolled
+          d.resolved_at = ((time_ms ~= nil) and time_ms() or now) + effective_reveal_delay_ms()
+        end
         break
       end
     end
@@ -357,6 +387,9 @@ local function start_round()
   MBJ.draw.inflight = false
   MBJ.draw.sent_ms = 0
   MBJ.draw.next_ms = 0
+  MBJ.draw.resolved_cb = nil
+  MBJ.draw.resolved_roll = nil
+  MBJ.draw.resolved_at = 0
 
   local count = dealer_player_count()
   for i = 1, count do
@@ -667,9 +700,11 @@ function draw_config_ui()
 
   MBJ.draw.delay_ms = ui_input_int("Dice delay (ms)##mbj_dice_delay", effective_draw_delay_ms())
   MBJ.draw.initial_deal_delay_ms = ui_input_int("dealing delay (ms)##mbj_initial_deal_delay", effective_initial_deal_delay_ms())
+  MBJ.draw.reveal_delay_ms = ui_input_int("Result reveal delay (ms)##mbj_reveal_delay", effective_reveal_delay_ms())
   MBJ.draw.timeout_ms = ui_input_int("Dice timeout (ms)##mbj_dice_timeout", effective_draw_timeout_ms())
   effective_draw_timeout_ms()
   effective_initial_deal_delay_ms()
+  effective_reveal_delay_ms()
 
   ui_separator()
   ui_text_colored("Chat Templates", 0.9, 0.95, 1.0, 1.0)
