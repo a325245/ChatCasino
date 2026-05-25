@@ -737,6 +737,8 @@ local function sync_buyers_from_roster()
     if name ~= nil and name ~= "" and dealer_is_eligible(name) then
       local existing = tonumber(BINGO.cards_bought[name]) or 0
       if existing < 1 then BINGO.cards_bought[name] = 1 end
+      local pos = tonumber(BINGO.player_positions[name]) or 0
+      if pos < 1 then BINGO.player_positions[name] = i end
     end
   end
 end
@@ -822,6 +824,15 @@ local function start_round()
     end
   end
 
+  table.sort(BINGO.players, function(a, b)
+    local pa = tonumber(BINGO.player_positions[a]) or 999999
+    local pb = tonumber(BINGO.player_positions[b]) or 999999
+    if pa == pb then
+      return string.lower(tostring(a)) < string.lower(tostring(b))
+    end
+    return pa < pb
+  end)
+
   if #BINGO.players == 0 then
     BINGO.phase = "idle"
     BINGO.info = "No eligible players in dealer roster."
@@ -853,16 +864,6 @@ local function start_round()
 
   BINGO.phase = "running"
   BINGO.info = "Bingo ready: " .. condition_label(active_condition_key()) .. ". Draw the first ball."
-
-  -- Apply random turn order if enabled
-  if global_random_turn_order ~= nil and global_random_turn_order() then
-    local rng = create_prng(hash_string(BINGO.room_name .. "-turnorder"))
-    local pl = BINGO.players
-    for i = #pl, 2, -1 do
-      local j = math.floor(rng() * i) + 1
-      pl[i], pl[j] = pl[j], pl[i]
-    end
-  end
 
   announce("start", { total = #BINGO.players })
   announce("room", { result = BINGO.room_name })
@@ -1382,10 +1383,6 @@ function draw_config_ui()
   end
 
   ui_separator()
-  ui_text_colored("Turn Order", 0.9, 0.95, 1.0, 1.0)
-  if global_random_turn_order ~= nil and global_random_turn_order() then
-    ui_text("Random turn order is ON (set in global Config tab).")
-  else
-    ui_text("Turn order: first joined = top, last joined = bottom. (Set in global Config tab.)")
-  end
+  ui_text_colored("Player List", 0.9, 0.95, 1.0, 1.0)
+  ui_text("Bingo uses the roster order (by dealer position). No turn-order randomization is applied.")
 end
