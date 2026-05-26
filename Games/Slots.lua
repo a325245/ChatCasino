@@ -1,6 +1,12 @@
 -- ============================================================================
--- fair_slots_3x3.lua
--- Final Fixed Version: High Security / Balanced Math / Full UI & Output
+-- 3x3 Slots 1.0
+-- players roll 3 randoms
+-- each random maps to a strip symbol index (1-10)
+-- three strips of 3 symbols are printed to chat as the "grid"
+-- 8 lines are evaluated for wins: 3 horizontal, 3 vertical, 2 diagonal
+-- payouts are based on bet per line, which is total wager divided by 8
+-- configurable options include reel stop delay and dealer auto-roll mode 
+-- where the dealer issues /dice party rolls on behalf of the player and reads results from chat
 -- ============================================================================
 
 if SLOTS == nil then
@@ -23,22 +29,22 @@ if SLOTS == nil then
     show_help = true,
 
     strip = {
-      "[  ]", -- 1
-      "[  ]", -- 2 (BAR)
-      "[  ]", -- 3 (BAR)
-      "[  ]", -- 4
-      "[  ]", -- 5
-      "[  ]", -- 6
-      "[ ♠ ]", -- 7
+      "[ ♠ ]", -- 1
+      "[  ]", -- 2 (hq)
+      "[  ]", -- 3 (hq)
+      "[  ]", -- 4 flower
+      "[  ]", -- 5 flower
+      "[  ]", -- 6 flower
+      "[  ]", -- 7 7 symbol
       "[ ♥ ]", -- 8
       "[ ♦ ]", -- 9
       "[ ♣ ]"  -- 10
     },
 
     config = {
-      min_bet_per_line = 5,
-      max_bet_per_line = 100,
       reel_stop_delay_ms = 400, 
+      dealer_rolls_for_player = false,
+      dealer_roll_spacing_ms = 800,
       pay_777 = 150,      
       pay_bar = 25,       
       pay_cash = 5,       
@@ -48,14 +54,27 @@ if SLOTS == nil then
     },
 
     chat_templates = {
-      queued = "<player> queued for <lines> lines! (Total: <total_bet> chips)",
+      queued = "<player> queued up!",
       turn_prompt = "<player>, you're up! Type this <roll_text>: \"/dice party\"",
       spin_start = "<player> rolls: <reason>. Spinning...",
-      result_win = "<player> won <payout> chips on <lines_won> lines! (<reason>)",
+      result_win = "<player> won <total_win>! <reason>",
       result_lose = "No hit for <player>. Better luck next time!",
     }
   }
 end
+
+-- Function: normalize_win_template
+-- Purpose: Normalizes legacy win template text to the newer total-win format.
+local function normalize_win_template()
+  local t = SLOTS.chat_templates or {}
+  local winTpl = tostring(t.result_win or "")
+  if winTpl == "<player> won <payout> on <lines_won> lines! (<reason>)" then
+    t.result_win = "<player> won <total_win>! <reason>"
+  end
+  SLOTS.chat_templates = t
+end
+
+normalize_win_template()
 
 -- ============================================================================
 -- UTILITIES & CHAT MESSAGING
@@ -99,7 +118,17 @@ local function announce(key, ctx)
   local template = SLOTS.chat_templates[key]
   if not template then return end
   local msg = template
-  local vals = { ["<player>"] = tostring(ctx.player or ""), ["<lines>"] = tostring(ctx.lines or 0), ["<total_bet>"] = tostring(ctx.total_bet or 0), ["<payout>"] = tostring(ctx.payout or 0), ["<lines_won>"] = tostring(ctx.lines_won or 0), ["<reason>"] = tostring(ctx.reason or ""), ["<roll>"] = tostring(ctx.roll or 0), ["<roll_text>"] = tostring(ctx.roll_text or "") }
+  local vals = {
+    ["<player>"] = tostring(ctx.player or ""),
+    ["<lines>"] = tostring(ctx.lines or 0),
+    ["<total_bet>"] = tostring(ctx.total_bet or 0),
+    ["<payout>"] = tostring(ctx.payout or 0),
+    ["<total_win>"] = tostring(ctx.total_win or ctx.payout or 0),
+    ["<lines_won>"] = tostring(ctx.lines_won or 0),
+    ["<reason>"] = tostring(ctx.reason or ""),
+    ["<roll>"] = tostring(ctx.roll or 0),
+    ["<roll_text>"] = tostring(ctx.roll_text or "")
+  }
   for k, v in pairs(vals) do msg = msg:gsub(k, v) end
   table_announce(msg)
 end
@@ -108,6 +137,62 @@ end
 -- Purpose: Handles config file name logic for the Slots script.
 local function config_file_name()
   return "Slots.config.json"
+end
+
+-- Function: spin_log_file_name
+-- Purpose: Returns the CSV log filename used for per-spin audit output.
+local function spin_log_file_name()
+  return "Slots.spinlog.csv"
+end
+
+-- Function: csv_escape
+-- Purpose: Escapes a value so it can be safely written as a CSV field.
+local function csv_escape(v)
+  local s = tostring(v or "")
+  s = string.gsub(s, '"', '""')
+  return '"' .. s .. '"'
+end
+
+-- Function: append_spin_log_row
+-- Purpose: Appends one spin audit row to the CSV file after each settled spin.
+local function append_spin_log_row(res)
+  if script_read_text == nil or script_write_text == nil then return false end
+  if type(res) ~= "table" then return false end
+
+  local timestamp = tonumber(time_ms and time_ms() or 0) or 0
+  local player = tostring(res.player or "")
+  local totalWager = tonumber(res.total_bet) or 0
+  local payout = tonumber(res.payout) or 0
+  local net = payout - totalWager
+  local outcome = "push"
+  local outcomeAmount = 0
+  if net > 0 then
+    outcome = "won"
+    outcomeAmount = net
+  elseif net < 0 then
+    outcome = "lost"
+    outcomeAmount = math.abs(net)
+  end
+  local reason = tostring(res.reason or "")
+
+  local header = "timestamp_ms,player,total_wager,payout,net,outcome,amount,reason\n"
+  local row = table.concat({
+    tostring(math.floor(timestamp)),
+    csv_escape(player),
+    tostring(math.floor(totalWager)),
+    tostring(math.floor(payout)),
+    tostring(math.floor(net)),
+    csv_escape(outcome),
+    tostring(math.floor(outcomeAmount)),
+    csv_escape(reason),
+  }, ",") .. "\n"
+
+  local existing = script_read_text(spin_log_file_name()) or ""
+  if existing == "" then
+    return script_write_text(spin_log_file_name(), header .. row) == true
+  end
+
+  return script_write_text(spin_log_file_name(), existing .. row) == true
 end
 
 -- Function: echo_notice
@@ -127,9 +212,9 @@ end
 local function export_config_blob()
   local c = SLOTS.config or {}
   local s = "return {"
-    .. "min_bet_per_line=" .. tostring(math.floor(tonumber(c.min_bet_per_line) or 5)) .. ","
-    .. "max_bet_per_line=" .. tostring(math.floor(tonumber(c.max_bet_per_line) or 100)) .. ","
     .. "reel_stop_delay_ms=" .. tostring(math.floor(tonumber(c.reel_stop_delay_ms) or 400)) .. ","
+    .. "dealer_rolls_for_player=" .. tostring(c.dealer_rolls_for_player == true) .. ","
+    .. "dealer_roll_spacing_ms=" .. tostring(math.floor(tonumber(c.dealer_roll_spacing_ms) or 800)) .. ","
     .. "show_help=" .. tostring(SLOTS.show_help == true)
     .. "}"
   return s
@@ -140,11 +225,24 @@ end
 local function apply_config_table(data)
   if type(data) ~= "table" then return false end
   SLOTS.config = SLOTS.config or {}
-  if data.min_bet_per_line ~= nil then SLOTS.config.min_bet_per_line = tonumber(data.min_bet_per_line) or SLOTS.config.min_bet_per_line end
-  if data.max_bet_per_line ~= nil then SLOTS.config.max_bet_per_line = tonumber(data.max_bet_per_line) or SLOTS.config.max_bet_per_line end
   if data.reel_stop_delay_ms ~= nil then SLOTS.config.reel_stop_delay_ms = tonumber(data.reel_stop_delay_ms) or SLOTS.config.reel_stop_delay_ms end
+  if data.dealer_rolls_for_player ~= nil then SLOTS.config.dealer_rolls_for_player = (data.dealer_rolls_for_player == true) end
+  if data.dealer_roll_spacing_ms ~= nil then SLOTS.config.dealer_roll_spacing_ms = tonumber(data.dealer_roll_spacing_ms) or SLOTS.config.dealer_roll_spacing_ms end
   if data.show_help ~= nil then SLOTS.show_help = (data.show_help == true) end
+  if SLOTS.config.dealer_roll_spacing_ms == nil then SLOTS.config.dealer_roll_spacing_ms = 800 end
+  if SLOTS.config.dealer_roll_spacing_ms < 100 then SLOTS.config.dealer_roll_spacing_ms = 100 end
   return true
+end
+
+-- Function: effective_dealer_roll_spacing_ms
+-- Purpose: Normalizes dealer auto-roll spacing into a safe millisecond range.
+local function effective_dealer_roll_spacing_ms()
+  SLOTS.config = SLOTS.config or {}
+  local v = tonumber(SLOTS.config.dealer_roll_spacing_ms) or 800
+  if v < 100 then v = 100 end
+  if v > 10000 then v = 10000 end
+  SLOTS.config.dealer_roll_spacing_ms = math.floor(v)
+  return SLOTS.config.dealer_roll_spacing_ms
 end
 
 -- Function: save_config_file
@@ -247,22 +345,8 @@ local function process_pending_announcements()
       else
         announce("result_lose", { player = res.player })
       end
+      append_spin_log_row(res)
     end
-  end
-
-  ui_separator()
-  if ui_collapsing_header ~= nil then
-    SLOTS.show_help = ui_collapsing_header("Slots Help##slots_help")
-  end
-  if SLOTS.show_help == true then
-    ui_text_colored("How It Works", 0.9, 0.95, 1.0, 1.0)
-    ui_text("Players queue by chat command, then roll /dice for seeded spin results.")
-    ui_text("1 line uses 1 roll; multi-line spins use 3 rolls.")
-    ui_text("Cost = bet per line x selected lines; wager is withdrawn at spin start.")
-    ui_separator()
-    ui_text_colored("Dealer Tips", 0.9, 0.95, 1.0, 1.0)
-    ui_text("Use Queue buttons while idle for manual queueing.")
-    ui_text("Use Force Roll for AFK players when waiting for required dice.")
   end
 end
 
@@ -345,17 +429,17 @@ local function eval_line(sym1, sym2, sym3, bet)
   if c2 == "7" then count_7 = count_7 + 1 end
   if c3 == "7" then count_7 = count_7 + 1 end
 
-  if c1 == "7" and c2 == "7" and c3 == "7" then return bet * SLOTS.config.pay_777, "7-7-7" end
-  if c1 == "BAR" and c2 == "BAR" and c3 == "BAR" then return bet * SLOTS.config.pay_bar, "3 BAR" end
-  if c1 == "$" and c2 == "$" and c3 == "$" then return bet * SLOTS.config.pay_cash, "3 " end
+  if c1 == "7" and c2 == "7" and c3 == "7" then return bet * SLOTS.config.pay_777, "7-7-7", SLOTS.config.pay_777 end
+  if c1 == "BAR" and c2 == "BAR" and c3 == "BAR" then return bet * SLOTS.config.pay_bar, "3 BAR", SLOTS.config.pay_bar end
+  if c1 == "$" and c2 == "$" and c3 == "$" then return bet * SLOTS.config.pay_cash, "3 ", SLOTS.config.pay_cash end
   
   local suits = {SPADE=true, HEART=true, DIAMOND=true, CLUB=true}
-  if c1 == c2 and c2 == c3 and suits[c1] then return bet * SLOTS.config.pay_3_suits, "3 Suits" end
+  if c1 == c2 and c2 == c3 and suits[c1] then return bet * SLOTS.config.pay_3_suits, "3 Suits", SLOTS.config.pay_3_suits end
 
-  if count_7 == 2 then return bet * SLOTS.config.pay_any_two_7, "Two 7s" end
-  if count_7 == 1 then return bet * SLOTS.config.pay_any_one_7, "One 7" end
+  if count_7 == 2 then return bet * SLOTS.config.pay_any_two_7, "Two 7s", SLOTS.config.pay_any_two_7 end
+  if count_7 == 1 then return bet * SLOTS.config.pay_any_one_7, "One 7", SLOTS.config.pay_any_one_7 end
 
-  return 0, ""
+  return 0, "", 0
 end
 
 -- ============================================================================
@@ -367,14 +451,115 @@ end
 local function execute_spin(player_name, lines, bet, rolls)
   local now = tonumber(time_ms()) or 0
   local delay = SLOTS.config.reel_stop_delay_ms
-  local req = lines <= 1 and 1 or 3
+  local req = 3
   local rows = {}
+
+  -- Direct digit mapping mode:
+  -- roll 986 -> indices 9,8,6
+  -- roll 091 -> indices 10,9,1  (0 maps to strip slot 10)
+  -- roll 7   -> treated as 007 -> indices 10,10,7
+  local function roll_to_indices(v)
+    local n = math.floor(tonumber(v) or 0)
+    if n < 0 then n = 0 end
+    if n > 1000 then n = 1000 end
+
+    local text = string.format("%03d", n % 1000)
+    local d1 = tonumber(string.sub(text, 1, 1)) or 0
+    local d2 = tonumber(string.sub(text, 2, 2)) or 0
+    local d3 = tonumber(string.sub(text, 3, 3)) or 0
+
+    local function digit_to_strip_index(d)
+      if d == 0 then return 10 end
+      return d
+    end
+
+    return {
+      digit_to_strip_index(d1),
+      digit_to_strip_index(d2),
+      digit_to_strip_index(d3),
+    }
+  end
+
   for i = 1, req do
-    local rv = rolls[i] - 1
-    rows[i] = { math.floor(rv/100)+1, math.floor((rv%100)/10)+1, (rv%10)+1 }
+    rows[i] = roll_to_indices(rolls[i])
   end
   SLOTS.active_spin = { player = player_name, lines = lines, bet = bet, rows = rows, stop_1 = now+delay, stop_2 = now+(delay*2), stop_3 = now+(delay*3) }
   SLOTS.phase = "spinning"
+end
+
+-- Function: process_dealer_auto_rolls
+-- Purpose: Performs dealer-driven random rolls while waiting for a queued player's spin seed.
+local function process_dealer_auto_rolls()
+  if SLOTS.phase ~= "waiting_roll" then return end
+  if SLOTS.active_spin == nil then return end
+  local autoMode = (SLOTS.config and SLOTS.config.dealer_rolls_for_player == true) or (SLOTS.active_spin.force_auto_roll == true)
+  if not autoMode then return end
+
+  local now = tonumber(time_ms()) or 0
+  SLOTS.active_spin.next_auto_roll_at = tonumber(SLOTS.active_spin.next_auto_roll_at) or now
+
+  -- Step 1: issue dealer /dice party command.
+  if SLOTS.active_spin.auto_roll_inflight ~= true then
+    if now < SLOTS.active_spin.next_auto_roll_at then return end
+
+    local issued = false
+    if chat_command ~= nil then
+      local ok = pcall(function() chat_command("/dice party") end)
+      issued = ok
+    elseif dice_command ~= nil then
+      issued = (dice_command("party", 1000) == true)
+    end
+
+    if issued then
+      SLOTS.active_spin.auto_roll_inflight = true
+      SLOTS.active_spin.auto_roll_sent_at = now
+    else
+      SLOTS.active_spin.next_auto_roll_at = now + effective_dealer_roll_spacing_ms()
+    end
+    return
+  end
+
+  -- Step 2: read back the next dice result from chat.
+  for _ = 1, 24 do
+    local pkt = (chat_poll ~= nil) and chat_poll() or ""
+    if pkt == "" then break end
+
+    local _, _, _, message = string.match(pkt, "^([^|]*)|([^|]*)|([^|]*)|(.*)$")
+    local msg = tostring(message or "")
+    local rolled = (dice_roll_value ~= nil and message ~= nil) and tonumber(dice_roll_value(message) or 0) or 0
+    local upper = (dice_roll_upper ~= nil and message ~= nil) and tonumber(dice_roll_upper(message) or 0) or 0
+
+    -- Fallback parse for chat formats like: "Random! 194"
+    if rolled == nil or rolled <= 0 then
+      local n = msg:match("[Rr]andom!%s*(%d+)")
+      if n == nil then
+        for v in msg:gmatch("%d+") do n = v end
+      end
+      rolled = tonumber(n) or 0
+    end
+
+    -- Accept party dice results even if upper parsing varies by client/locale.
+    if rolled >= 1 and rolled <= 1000 and (upper == 1000 or upper == 0 or upper == nil) then
+      table.insert(SLOTS.active_spin.rolls, rolled)
+      --table_announce("Dealer rolled for " .. tostring(SLOTS.active_spin.player) .. ": " .. tostring(rolled))
+      SLOTS.active_spin.auto_roll_inflight = false
+
+      if #SLOTS.active_spin.rolls >= (tonumber(SLOTS.active_spin.required_rolls) or 3) then
+        execute_spin(SLOTS.active_spin.player, SLOTS.active_spin.lines, SLOTS.active_spin.bet, SLOTS.active_spin.rolls)
+        return
+      end
+
+      SLOTS.active_spin.next_auto_roll_at = now + effective_dealer_roll_spacing_ms()
+      return
+    end
+  end
+
+  -- If we issued /dice but never observed a result, retry after a short timeout.
+  local sentAt = tonumber(SLOTS.active_spin.auto_roll_sent_at) or now
+  if now - sentAt > math.max(1500, effective_dealer_roll_spacing_ms()) then
+    SLOTS.active_spin.auto_roll_inflight = false
+    SLOTS.active_spin.next_auto_roll_at = now + 200
+  end
 end
 
 -- Function: process_active_spin
@@ -401,12 +586,16 @@ local function process_active_spin()
     -- Function: check
     -- Purpose: Handles check logic for the Slots script.
     local function check(s1,s2,s3,label)
-      local p, r = eval_line(s1,s2,s3,s.bet)
-      if p > 0 then win = win + p; l_won = l_won + 1; table.insert(reasons, label..":"..r) end
+      local p, r, mult = eval_line(s1,s2,s3,s.bet)
+      if p > 0 then
+        win = win + p
+        l_won = l_won + 1
+        table.insert(reasons, label .. ": " .. r .. " (" .. tostring(p) .. ")")
+      end
     end
-    if s.lines >= 1 then check(grid.m1, grid.m2, grid.m3, "Mid") end
-    if s.lines >= 2 then check(grid.t1, grid.t2, grid.t3, "Top") end
-    if s.lines >= 3 then check(grid.b1, grid.b2, grid.b3, "Bot") end
+    if s.lines >= 1 then check(grid.t1, grid.t2, grid.t3, "R1") end
+    if s.lines >= 2 then check(grid.m1, grid.m2, grid.m3, "R2") end
+    if s.lines >= 3 then check(grid.b1, grid.b2, grid.b3, "R3") end
     if s.lines >= 4 then check(grid.t1, grid.m2, grid.b3, "D1") end
     if s.lines >= 5 then check(grid.b1, grid.m2, grid.t3, "D2") end
     if s.lines >= 6 then check(grid.t1, grid.m1, grid.b1, "C1") end
@@ -414,7 +603,14 @@ local function process_active_spin()
     if s.lines >= 8 then check(grid.t3, grid.m3, grid.b3, "C3") end
     
     -- RESTORED: Handing off to the queue to print the grid to chat
-    queue_grid_announce(grid, {player=s.player, payout=win, lines_won=l_won, reason=table.concat(reasons, ", ")})
+    queue_grid_announce(grid, {
+      player=s.player,
+      payout=win,
+      total_win=win,
+      total_bet=(tonumber(s.bet) or 0) * 8,
+      lines_won=l_won,
+      reason=table.concat(reasons, "; ")
+    })
     
     SLOTS.last_grid = {t=t, m=m, b=b}
     SLOTS.active_spin, SLOTS.phase = nil, "idle"
@@ -428,6 +624,11 @@ end
 -- Function: process_chat_inputs
 -- Purpose: Processes chat inputs updates for the current game state.
 local function process_chat_inputs()
+  -- In dealer auto-roll mode, preserve chat_poll packets for process_dealer_auto_rolls().
+  if SLOTS.phase == "waiting_roll" and SLOTS.active_spin ~= nil and ((SLOTS.config and SLOTS.config.dealer_rolls_for_player == true) or SLOTS.active_spin.force_auto_roll == true) then
+    return
+  end
+
   for _ = 1, 15 do
     local pkt = (chat_poll ~= nil) and chat_poll() or ""
     if pkt == "" then break end
@@ -439,32 +640,31 @@ local function process_chat_inputs()
       if player then
         local m = trim_text(message):lower()
         if m:find("^spin") then
-          local lines = tonumber(m:match("^spin%s+(%d+)")) or 1
-          lines = math.max(1, math.min(8, lines))
+          local lines = 8
           
-          local raw_w = (dealer_get_wager ~= nil) and tonumber(dealer_get_wager(player)) or 0
-          local wager = math.max(SLOTS.config.min_bet_per_line, math.min(SLOTS.config.max_bet_per_line, (raw_w > 0 and raw_w or SLOTS.config.min_bet_per_line)))
+          local total_wager = (dealer_get_wager ~= nil) and tonumber(dealer_get_wager(player)) or 0
+          local wager = math.floor(math.max(0, total_wager) / 8)
           local bank = (dealer_get_bank ~= nil) and tonumber(dealer_get_bank(player)) or 0
-          local cost = wager * lines
+          local cost = wager * 8
           
-          if bank >= cost then
+          if wager > 0 and bank >= cost then
             local already = false
             for i=1, #SLOTS.queue do if SLOTS.queue[i].player == player then already = true end end
             if SLOTS.active_spin and SLOTS.active_spin.player == player then already = true end
             
             if not already then
               table.insert(SLOTS.queue, { player=player, lines=lines, bet=wager })
-              if SLOTS.phase ~= "idle" then announce("queued", {player=player, lines=lines, total_bet=cost}) end
+              if SLOTS.phase ~= "idle" then announce("queued", {player=player, lines=8, total_bet=cost}) end
             else
               send_tell_logged(player, "You are already spinning or queued!")
             end
           else
-            send_tell_logged(player, "Not enough chips! Costs " .. cost .. " for " .. lines .. " lines.")
+            send_tell_logged(player, "Not enough gil! Slots uses 8 lines: total wager is split 8 ways.")
           end
         end
       end
 
-      if SLOTS.phase == "waiting_roll" and message_is_from_expected_roller(name, message) then
+      if SLOTS.phase == "waiting_roll" and not (SLOTS.config and SLOTS.config.dealer_rolls_for_player == true) and message_is_from_expected_roller(name, message) then
         local r = nil
         if dice_roll_value ~= nil then r = tonumber(dice_roll_value(message)) end
         if r == nil or r == 0 then
@@ -489,9 +689,12 @@ end
 -- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
   ui_text("Config status: " .. tostring(SLOTS.config_status or ""))
-  SLOTS.config.min_bet_per_line = math.max(1, ui_input_int("Min Bet", SLOTS.config.min_bet_per_line))
-  SLOTS.config.max_bet_per_line = math.max(1, ui_input_int("Max Bet", SLOTS.config.max_bet_per_line))
+  ui_text("Bet limits come from global dealer settings.")
+  ui_text("Wins are determined by 8 line directions - horizontal, vertical, and diagonal.")
+  ui_text("Player total wager is divided by 8 (rounded down per line).")
   SLOTS.config.reel_stop_delay_ms = math.max(100, ui_input_int("Delay (ms)", SLOTS.config.reel_stop_delay_ms))
+  SLOTS.config.dealer_rolls_for_player = ui_checkbox("Dealer rolls for player", SLOTS.config.dealer_rolls_for_player == true)
+  SLOTS.config.dealer_roll_spacing_ms = math.max(100, ui_input_int("Dealer roll spacing (ms)", effective_dealer_roll_spacing_ms()))
   ui_separator()
   if ui_button("Save Config##slots_cfg_save") then
     save_config_file()
@@ -510,22 +713,26 @@ function draw_ui()
   
   if SLOTS.phase == "idle" and SLOTS.pending_grid_lines == nil and #SLOTS.queue > 0 then
     SLOTS.active_spin = table.remove(SLOTS.queue, 1)
+    SLOTS.active_spin.lines = 8
     SLOTS.phase = "waiting_roll"
     SLOTS.active_spin.rolls = {}
-    SLOTS.active_spin.required_rolls = (SLOTS.active_spin.lines <= 1) and 1 or 3
-    local cost = SLOTS.active_spin.bet * SLOTS.active_spin.lines
+    SLOTS.active_spin.required_rolls = 3
+    SLOTS.active_spin.auto_roll_inflight = false
+    SLOTS.active_spin.next_auto_roll_at = (tonumber(time_ms()) or 0) + effective_dealer_roll_spacing_ms()
+    local cost = SLOTS.active_spin.bet * 8
     if dealer_add_bank then dealer_add_bank(SLOTS.active_spin.player, -cost) end
     SLOTS.stats_wagered, SLOTS.stats_spins = SLOTS.stats_wagered + cost, SLOTS.stats_spins + 1
-    local req = tonumber(SLOTS.active_spin.required_rolls) or 1
-    local rollText = (req == 1) and "1 time" or (tostring(req) .. " times")
-    announce("turn_prompt", {player=SLOTS.active_spin.player, roll=req, roll_text=rollText})
+    if SLOTS.config and SLOTS.config.dealer_rolls_for_player == true then
+      table_announce("Dealer auto-roll is enabled: rolling 3 randoms for " .. tostring(SLOTS.active_spin.player) .. ".")
+    else
+      announce("turn_prompt", {player=SLOTS.active_spin.player, roll=3, roll_text="3 times"})
+    end
   end
 
+  process_dealer_auto_rolls()
   process_active_spin()
 
-  ui_text_colored("ChatCasino: Final Fixed 3x3 Slots", 0.9, 0.7, 1.0, 1.0)
-  ui_separator()
-  ui_text(string.format("RTP: %.2f%% | Spins: %d", (SLOTS.stats_wagered > 0 and (SLOTS.stats_paid/SLOTS.stats_wagered)*100 or 0), SLOTS.stats_spins))
+  ui_text_colored("ChatCasino: 3x3 Slots", 0.9, 0.7, 1.0, 1.0)
   ui_separator()
   ui_text("Status: " .. SLOTS.phase .. " | Queue: " .. #SLOTS.queue)
 
@@ -564,36 +771,73 @@ function draw_ui()
   ui_separator()
 
   if SLOTS.phase == "waiting_roll" and SLOTS.active_spin then
-    if ui_button_colored("Force Roll for AFK Player", 0.8, 0.4, 0.2, 1.0) then
-      local req = SLOTS.active_spin.required_rolls
-      local forced = {}
-      for i = 1, req do forced[i] = math.random(1, 1000) end
-      execute_spin(SLOTS.active_spin.player, SLOTS.active_spin.lines, SLOTS.active_spin.bet, forced)
+    if ui_button_colored("Force Roll for Player", 0.8, 0.4, 0.2, 1.0) then
+      SLOTS.active_spin.force_auto_roll = true
+      SLOTS.active_spin.auto_roll_inflight = false
+      SLOTS.active_spin.next_auto_roll_at = tonumber(time_ms()) or 0
+      table_announce("Rolling for " .. tostring(SLOTS.active_spin.player) .. ".")
     end
   elseif SLOTS.phase == "idle" then
-    ui_text_colored("Queue a Player Manually:", 0.7, 0.7, 0.7, 1.0)
+    ui_text_colored("Queue a Player:", 0.7, 0.7, 0.7, 1.0)
+    ui_separator()
+    ui_text(" ")
     local count = tonumber(dealer_player_count and dealer_player_count() or 0)
     for i = 1, count do
       local n = dealer_player_name(i)
       if dealer_is_eligible(n) then
-        ui_text(n); ui_same_line()
-        local pick = SLOTS.ui_line_pick[n] or 8
-        -- Function: lp_btn
-        -- Purpose: Handles lp btn logic for the Slots script.
-        local function lp_btn(lbl, v)
-          if pick == v and ui_button_colored then return ui_button_colored(lbl.."##"..n..v, 0.2, 0.8, 0.2, 1.0) end
-          return ui_button(lbl.."##"..n..v)
-        end
-        if lp_btn("1L", 1) then SLOTS.ui_line_pick[n] = 1 end; ui_same_line()
-        if lp_btn("3L", 3) then SLOTS.ui_line_pick[n] = 3 end; ui_same_line()
-        if lp_btn("5L", 5) then SLOTS.ui_line_pick[n] = 5 end; ui_same_line()
-        if lp_btn("8L", 8) then SLOTS.ui_line_pick[n] = 8 end; ui_same_line()
-        
+        local totalWager = tonumber(dealer_get_wager and dealer_get_wager(n) or 0) or 0
+        local perLine = math.floor(math.max(0, totalWager) / 8)
+        local totalCost = perLine * 8
+        ui_text(n .. " | Total Wager " .. tostring(totalWager) .. " | Per Line " .. tostring(perLine)); ui_same_line()
         if ui_button("Queue##"..n.."q") then
-          local w = tonumber(dealer_get_wager(n)) or 5
-          table.insert(SLOTS.queue, { player=n, lines=(SLOTS.ui_line_pick[n] or 8), bet=w })
+          if perLine > 0 then
+            table.insert(SLOTS.queue, { player=n, lines=8, bet=perLine })
+
+          else
+            send_tell_logged(n, "Your total wager is too low for 8-line Slots.")
+          end
         end
+        ui_text(" ")
       end
     end
+    ui_text(" ")
   end
+  
+
+  if ui_collapsing_header ~= nil then
+    SLOTS.show_help = ui_collapsing_header("Pay Table##Pay Table_bottom")
+  end
+  if SLOTS.show_help == true then
+      ui_text_colored("Pay Table", 0.95, 0.9, 0.7, 1.0)
+      ui_text("7-7-7: x" .. tostring(SLOTS.config.pay_777))
+      ui_text("--: x" .. tostring(SLOTS.config.pay_bar))
+      ui_text("--: x" .. tostring(SLOTS.config.pay_cash))
+      ui_text("3 matching suits: x" .. tostring(SLOTS.config.pay_3_suits))
+      ui_text("Any two 7s: x" .. tostring(SLOTS.config.pay_any_two_7))
+      ui_text("Any one 7: x" .. tostring(SLOTS.config.pay_any_one_7))
+   end
+
+  ui_separator()
+  if ui_collapsing_header ~= nil then
+    SLOTS.show_help = ui_collapsing_header("Slots Help##slots_help_bottom")
+  end
+  if SLOTS.show_help == true then
+    ui_text_colored("How It Works", 0.9, 0.95, 1.0, 1.0)
+    ui_text("--- Wins are determined by 8 line directions - horizontal, vertical, and diagonal.")
+    ui_text("--- Player total wager is split across 8 lines (rounded down per line).")
+    ui_text("--- Players may queue themselves up by saying \"spin\" or via the dealer Queue button")
+    ui_text("--- Player rolls /dice party 3 times to seed  the R1/R2/R3 rows before dealer outputs Symbol view.")
+    ui_separator()
+    ui_text_colored("Dealer Tips", 0.9, 0.95, 1.0, 1.0)
+    ui_text("--- A config option exists to autoroll for players.")
+    ui_text("--- You may also Force Roll for players unable to roll.")
+  end
+  ui_separator()
+  ui_text(string.format(
+    "Return To Player: %.2f%% | Spins: %d | Gil In: %d | Gil Out: %d",
+    (SLOTS.stats_wagered > 0 and (SLOTS.stats_paid/SLOTS.stats_wagered)*100 or 0),
+    SLOTS.stats_spins,
+    math.floor(tonumber(SLOTS.stats_wagered) or 0),
+    math.floor(tonumber(SLOTS.stats_paid) or 0)
+  ))
 end
