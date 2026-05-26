@@ -60,6 +60,7 @@ if BINGO == nil then
     autodraw_started = false,
 
     dealer_view_collapsed = false,
+    show_help = true,
 
     tell_queue = {},
     tell_send_interval_ms = 1250,
@@ -76,6 +77,8 @@ local draw_mode_controls, draw_purchase_controls
 local hash_string, create_prng
 local condition_label, recalc_suggested_payouts
 
+-- Function: normalize_player_key
+-- Purpose: Normalizes player key into a consistent format for comparisons.
 local function normalize_player_key(name)
   local n = string.lower(tostring(name or ""))
   n = string.gsub(n, "[^%w]+", "-")
@@ -86,11 +89,15 @@ local function normalize_player_key(name)
   return n
 end
 
+-- Function: room_seed_text
+-- Purpose: Handles room seed text logic for the Bingo script.
 local function room_seed_text()
   if BINGO.room_words == nil or #BINGO.room_words < 3 then return "" end
   return table.concat(BINGO.room_words, " ")
 end
 
+-- Function: player_phrase
+-- Purpose: Handles player phrase logic for the Bingo script.
 local function player_phrase(name)
   return room_seed_text()
 end
@@ -142,6 +149,8 @@ build_cipher_words = function(roomName)
 end
 
 -- Mode and purchase controls
+-- Function: clamp_index
+-- Purpose: Handles clamp index logic for the Bingo script.
 local function clamp_index(v, minv, maxv)
   local n = tonumber(v) or minv
   if n < minv then n = minv end
@@ -279,10 +288,14 @@ draw_purchase_controls = function()
   end
 end
 
+-- Function: log_info
+-- Purpose: Handles log info logic for the Bingo script.
 local function log_info(msg)
   if log ~= nil then log("[Bingo] " .. tostring(msg or "")) end
 end
 
+-- Function: output_channel_name
+-- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
   if default_chat_channel ~= nil then
     local ch = default_chat_channel()
@@ -293,6 +306,8 @@ local function output_channel_name()
   return "party"
 end
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(message)
   local msg = tostring(message or "")
   if msg == "" then return end
@@ -304,6 +319,8 @@ local function table_announce(message)
   end
 end
 
+-- Function: fmt
+-- Purpose: Formats a chat template by replacing tokens with runtime values.
 local function fmt(template, ctx)
   local msg = tostring(template or "")
   if chat_format ~= nil then
@@ -330,11 +347,113 @@ local function fmt(template, ctx)
   return msg
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local t = BINGO.chat_templates or {}
   local template = t[key]
   if template == nil or template == "" then return end
   table_announce(fmt(template, ctx))
+end
+
+-- Function: config_file_name
+-- Purpose: Handles config file name logic for the Bingo script.
+local function config_file_name()
+  return "Bingo.config.json"
+end
+
+-- Function: echo_notice
+-- Purpose: Handles echo notice logic for the Bingo script.
+local function echo_notice(msg)
+  local text = tostring(msg or "")
+  if text == "" then return end
+  if chat_send ~= nil then
+    chat_send("echo", text)
+  elseif dealer_party ~= nil then
+    dealer_party(text)
+  end
+end
+
+-- Function: export_config_blob
+-- Purpose: Handles export config blob logic for the Bingo script.
+local function export_config_blob()
+  local s = "return {"
+    .. "web_base_url=[=[" .. tostring(BINGO.web_base_url or "") .. "]=],"
+    .. "catchup_limit_per_player=" .. tostring(math.floor(tonumber(BINGO.catchup_limit_per_player) or 1)) .. ","
+    .. "house_take_percent=" .. tostring(math.floor(tonumber(BINGO.house_take_percent) or 10)) .. ","
+    .. "autodraw_enabled=" .. tostring(BINGO.autodraw_enabled == true) .. ","
+    .. "autodraw_interval_ms=" .. tostring(math.floor(tonumber(BINGO.autodraw_interval_ms) or 5000)) .. ","
+    .. "show_help=" .. tostring(BINGO.show_help == true)
+    .. "}"
+  return s
+end
+
+-- Function: apply_config_table
+-- Purpose: Handles apply config table logic for the Bingo script.
+local function apply_config_table(data)
+  if type(data) ~= "table" then return false end
+  if data.web_base_url ~= nil then BINGO.web_base_url = tostring(data.web_base_url or BINGO.web_base_url) end
+  if data.catchup_limit_per_player ~= nil then BINGO.catchup_limit_per_player = tonumber(data.catchup_limit_per_player) or BINGO.catchup_limit_per_player end
+  if data.house_take_percent ~= nil then BINGO.house_take_percent = tonumber(data.house_take_percent) or BINGO.house_take_percent end
+  if data.autodraw_enabled ~= nil then BINGO.autodraw_enabled = (data.autodraw_enabled == true) end
+  if data.autodraw_interval_ms ~= nil then BINGO.autodraw_interval_ms = tonumber(data.autodraw_interval_ms) or BINGO.autodraw_interval_ms end
+  if data.show_help ~= nil then BINGO.show_help = (data.show_help == true) end
+  return true
+end
+
+-- Function: save_config_file
+-- Purpose: Saves config file data from runtime state.
+local function save_config_file()
+  if script_write_text == nil then
+    BINGO.config_status = "Bingo config save failed (host file API unavailable)."
+    echo_notice(BINGO.config_status)
+    return false
+  end
+  local ok = script_write_text(config_file_name(), export_config_blob()) == true
+  if ok then
+    BINGO.config_status = "Bingo config saved."
+  else
+    BINGO.config_status = "Bingo config save failed."
+  end
+  echo_notice(BINGO.config_status)
+  return ok
+end
+
+-- Function: load_config_file
+-- Purpose: Loads config file data into runtime state.
+local function load_config_file()
+  if script_read_text == nil then
+    BINGO.config_status = "Bingo config load skipped (host file API unavailable)."
+    return false
+  end
+  local raw = script_read_text(config_file_name())
+  if raw == nil or raw == "" then
+    BINGO.config_status = "Bingo config file not found."
+    return false
+  end
+  local loader = loadstring or load
+  local fn, err = loader(tostring(raw))
+  if not fn then
+    BINGO.config_status = "Bingo config syntax error: " .. tostring(err)
+    return false
+  end
+  local ok, data = pcall(fn)
+  if not ok then
+    BINGO.config_status = "Bingo config runtime error: " .. tostring(data)
+    return false
+  end
+  if not apply_config_table(data) then
+    BINGO.config_status = "Bingo config invalid payload."
+    return false
+  end
+  BINGO.config_status = "Bingo config loaded."
+  return true
+end
+
+if BINGO.config_status == nil then BINGO.config_status = "Bingo config not loaded yet." end
+if BINGO._config_loaded ~= true then
+  load_config_file()
+  BINGO._config_loaded = true
 end
 
 condition_label = function(key)
@@ -348,6 +467,8 @@ condition_label = function(key)
   return tostring(key or "")
 end
 
+-- Function: active_condition_key
+-- Purpose: Handles active condition key logic for the Bingo script.
 local function active_condition_key()
   if BINGO.mode == "progressive" then
     local idx = tonumber(BINGO.progressive_round_index) or 1
@@ -358,16 +479,22 @@ local function active_condition_key()
   return BINGO.single_condition
 end
 
+-- Function: to_u32
+-- Purpose: Handles to u32 logic for the Bingo script.
 local function to_u32(x)
   return (tonumber(x) or 0) % 4294967296
 end
 
+-- Function: to_i32
+-- Purpose: Handles to i32 logic for the Bingo script.
 local function to_i32(x)
   local u = to_u32(x)
   if u >= 2147483648 then return u - 4294967296 end
   return u
 end
 
+-- Function: u32_mul
+-- Purpose: Handles u32 mul logic for the Bingo script.
 local function u32_mul(a, b)
   local a0 = a % 65536
   local a1 = math.floor(a / 65536)
@@ -379,10 +506,14 @@ local function u32_mul(a, b)
   return to_u32(low + ((mid % 65536) * 65536))
 end
 
+-- Function: bit_rshift
+-- Purpose: Handles bit rshift logic for the Bingo script.
 local function bit_rshift(x, n)
   return math.floor(to_u32(x) / (2 ^ n))
 end
 
+-- Function: bit_bor
+-- Purpose: Handles bit bor logic for the Bingo script.
 local function bit_bor(a, b)
   local x = to_u32(a)
   local y = to_u32(b)
@@ -399,6 +530,8 @@ local function bit_bor(a, b)
   return to_u32(out)
 end
 
+-- Function: bit_bxor
+-- Purpose: Handles bit bxor logic for the Bingo script.
 local function bit_bxor(a, b)
   local x = to_u32(a)
   local y = to_u32(b)
@@ -438,6 +571,8 @@ create_prng = function(seed)
   end
 end
 
+-- Function: shuffled_range
+-- Purpose: Handles shuffled range logic for the Bingo script.
 local function shuffled_range(rng, minv, maxv)
   local pool = {}
   for n = minv, maxv do table.insert(pool, n) end
@@ -451,6 +586,8 @@ local function shuffled_range(rng, minv, maxv)
   return out
 end
 
+-- Function: generate_bingo_card
+-- Purpose: Handles generate bingo card logic for the Bingo script.
 local function generate_bingo_card(masterPhrase, cardIndex)
   local random = create_prng(hash_string(tostring(masterPhrase) .. "-" .. tostring(cardIndex)))
   local ranges = {
@@ -487,6 +624,8 @@ local function generate_bingo_card(masterPhrase, cardIndex)
   return { values = values, marks = marks }
 end
 
+-- Function: pick_room_words
+-- Purpose: Handles pick room words logic for the Bingo script.
 local function pick_room_words()
   local base = (time_ms ~= nil and time_ms() or os.time())
   local rng = create_prng(hash_string(tostring(base)))
@@ -505,10 +644,14 @@ local function pick_room_words()
   return words
 end
 
+-- Function: build_call_sequence
+-- Purpose: Handles build call sequence logic for the Bingo script.
 local function build_call_sequence(roomName)
   return shuffled_range(create_prng(hash_string(roomName)), 1, 75)
 end
 
+-- Function: ball_label
+-- Purpose: Handles ball label logic for the Bingo script.
 local function ball_label(n)
   local v = tonumber(n) or 0
   if v <= 15 then return "B-" .. tostring(v) end
@@ -518,6 +661,8 @@ local function ball_label(n)
   return "O-" .. tostring(v)
 end
 
+-- Function: url_encode
+-- Purpose: Handles url encode logic for the Bingo script.
 local function url_encode(s)
   local str = tostring(s or "")
   str = string.gsub(str, "\n", "\r\n")
@@ -528,6 +673,8 @@ local function url_encode(s)
   return str
 end
 
+-- Function: mark_ball_for_card
+-- Purpose: Handles mark ball for card logic for the Bingo script.
 local function mark_ball_for_card(card, ball)
   if card == nil then return end
 
@@ -546,6 +693,8 @@ local function mark_ball_for_card(card, ball)
   end
 end
 
+-- Function: mark_count
+-- Purpose: Handles mark count logic for the Bingo script.
 local function mark_count(card)
   local cols = { "B", "I", "N", "G", "O" }
   local c = 0
@@ -557,6 +706,8 @@ local function mark_count(card)
   return c
 end
 
+-- Function: line_count
+-- Purpose: Handles line count logic for the Bingo script.
 local function line_count(card)
   local cols = { "B", "I", "N", "G", "O" }
   local lines = 0
@@ -589,6 +740,8 @@ local function line_count(card)
   return lines
 end
 
+-- Function: card_satisfies_condition
+-- Purpose: Handles card satisfies condition logic for the Bingo script.
 local function card_satisfies_condition(card, condition)
   if card == nil then return false end
 
@@ -624,6 +777,8 @@ local function card_satisfies_condition(card, condition)
   return false
 end
 
+-- Function: player_has_condition
+-- Purpose: Handles player has condition logic for the Bingo script.
 local function player_has_condition(name, condition)
   local list = BINGO.cards[name] or {}
   for i = 1, #list do
@@ -632,6 +787,8 @@ local function player_has_condition(name, condition)
   return false
 end
 
+-- Function: progressive_split_percent
+-- Purpose: Handles progressive split percent logic for the Bingo script.
 local function progressive_split_percent(i, rounds)
   local fixed = BINGO.progressive_fixed_split or {}
   if rounds == 3 then
@@ -700,6 +857,8 @@ recalc_suggested_payouts = function()
   end
 end
 
+-- Function: reset_round_state
+-- Purpose: Handles reset round state logic for the Bingo script.
 local function reset_round_state()
   BINGO.players = {}
   BINGO.cards = {}
@@ -730,6 +889,8 @@ local function reset_round_state()
   end
 end
 
+-- Function: sync_buyers_from_roster
+-- Purpose: Handles sync buyers from roster logic for the Bingo script.
 local function sync_buyers_from_roster()
   local count = dealer_player_count()
   for i = 1, count do
@@ -743,6 +904,8 @@ local function sync_buyers_from_roster()
   end
 end
 
+-- Function: send_tell
+-- Purpose: Handles send tell logic for the Bingo script.
 local function send_tell(player, world, message)
   local msg = tostring(message or "")
   if msg == "" then return false end
@@ -778,6 +941,8 @@ local function send_tell(player, world, message)
   return false
 end
 
+-- Function: send_links_to_players
+-- Purpose: Handles send links to players logic for the Bingo script.
 local function send_links_to_players()
   if #BINGO.players == 0 then return end
 
@@ -808,6 +973,8 @@ local function send_links_to_players()
   BINGO.info = "Queued links: 0 / " .. tostring(#BINGO.tell_queue)
 end
 
+-- Function: start_round
+-- Purpose: Starts round for the current game flow.
 local function start_round()
   reset_round_state()
   sync_buyers_from_roster()
@@ -870,6 +1037,8 @@ local function start_round()
   send_links_to_players()
 end
 
+-- Function: draw_next_call
+-- Purpose: Handles draw next call logic for the Bingo script.
 local function draw_next_call()
   if BINGO.phase ~= "running" then return end
 
@@ -940,10 +1109,14 @@ local function draw_next_call()
   end
 end
 
+-- Function: trim
+-- Purpose: Handles trim logic for the Bingo script.
 local function trim(s)
   return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+-- Function: split_chat_packet
+-- Purpose: Handles split chat packet logic for the Bingo script.
 local function split_chat_packet(packet)
   local text = tostring(packet or "")
   if text == "" then return nil, nil, nil, nil end
@@ -962,6 +1135,8 @@ local function split_chat_packet(packet)
   return parts[1], parts[2], parts[3], parts[4]
 end
 
+-- Function: is_catchup_command
+-- Purpose: Handles is catchup command logic for the Bingo script.
 local function is_catchup_command(message)
   local m = string.lower(trim(message))
   m = string.gsub(m, "^[!/>%s]+", "")
@@ -971,12 +1146,16 @@ local function is_catchup_command(message)
   return m == "catchup" or m == "catch up"
 end
 
+-- Function: is_bingo_command
+-- Purpose: Handles is bingo command logic for the Bingo script.
 local function is_bingo_command(message)
   local m = string.lower(trim(message))
   m = string.gsub(m, "[!%.%?]+$", "")
   return m == "bingo" or m == "/bingo" or m == ">bingo" or m == "!bingo"
 end
 
+-- Function: normalize_name_for_match
+-- Purpose: Normalizes name for match into a consistent format for comparisons.
 local function normalize_name_for_match(name)
   local n = string.lower(tostring(name or ""))
   n = string.gsub(n, "^%b()", "")
@@ -987,6 +1166,8 @@ local function normalize_name_for_match(name)
   return n
 end
 
+-- Function: find_player_name
+-- Purpose: Handles find player name logic for the Bingo script.
 local function find_player_name(rawName)
   local raw = tostring(rawName or "")
   local rawLower = string.lower(raw)
@@ -1013,6 +1194,8 @@ local function find_player_name(rawName)
   return nil
 end
 
+-- Function: current_catchup_code
+-- Purpose: Handles current catchup code logic for the Bingo script.
 local function current_catchup_code()
   if BINGO.room_name == nil or BINGO.room_name == "" then return "" end
 
@@ -1029,6 +1212,8 @@ local function current_catchup_code()
   return tostring(BINGO.room_name) .. " " .. tostring(turnWord)
 end
 
+-- Function: catchup_remaining_for_player
+-- Purpose: Handles catchup remaining for player logic for the Bingo script.
 local function catchup_remaining_for_player(player)
   local used = tonumber(BINGO.catchup_requests[player]) or 0
   local limit = tonumber(BINGO.catchup_limit_per_player) or 1
@@ -1038,6 +1223,8 @@ local function catchup_remaining_for_player(player)
   return rem, used, limit
 end
 
+-- Function: send_catchup_to_player
+-- Purpose: Handles send catchup to player logic for the Bingo script.
 local function send_catchup_to_player(player, worldName, force)
   local code = current_catchup_code()
   if code == "" then
@@ -1072,6 +1259,8 @@ local function send_catchup_to_player(player, worldName, force)
   return false
 end
 
+-- Function: process_tell_queue
+-- Purpose: Processes tell queue updates for the current game state.
 local function process_tell_queue()
   local q = BINGO.tell_queue or {}
   if #q == 0 then return end
@@ -1103,6 +1292,8 @@ local function process_tell_queue()
   BINGO.tell_next_send_ms = now + interval
 end
 
+-- Function: maybe_process_chat
+-- Purpose: Handles maybe process chat logic for the Bingo script.
 local function maybe_process_chat()
   if chat_poll == nil or BINGO.phase ~= "running" then return end
 
@@ -1167,6 +1358,8 @@ local function maybe_process_chat()
   end
 end
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   process_tell_queue()
   maybe_process_chat()
@@ -1253,108 +1446,134 @@ function draw_ui()
 
   ui_separator()
   ui_text_colored("Dealer Card View", 0.9, 0.95, 1.0, 1.0)
+  local show_dealer_view = BINGO.dealer_view_collapsed ~= true
   if BINGO.dealer_view_collapsed == true then
     if ui_button("Show Dealer Card View##dealer_view_toggle") then
       BINGO.dealer_view_collapsed = false
+      show_dealer_view = true
     end
-    return
   else
     if ui_button("Hide Dealer Card View##dealer_view_toggle") then
       BINGO.dealer_view_collapsed = true
-      return
+      show_dealer_view = false
     end
   end
 
-  if #BINGO.players == 0 then
-    ui_text("(no active round)")
-    return
-  end
-
-  if BINGO.selected_player < 1 then BINGO.selected_player = 1 end
-  if BINGO.selected_player > #BINGO.players then BINGO.selected_player = #BINGO.players end
-
-  if ui_button("< Prev Player##prev_player") then
-    BINGO.selected_player = BINGO.selected_player - 1
-    if BINGO.selected_player < 1 then BINGO.selected_player = #BINGO.players end
-    BINGO.selected_card = 1
-  end
-  ui_same_line()
-  if ui_button("Next Player >##next_player") then
-    BINGO.selected_player = BINGO.selected_player + 1
-    if BINGO.selected_player > #BINGO.players then BINGO.selected_player = 1 end
-    BINGO.selected_card = 1
-  end
-
-  local p = BINGO.players[BINGO.selected_player]
-  local list = BINGO.cards[p] or {}
-  ui_text("Viewing: " .. tostring(p) .. " (" .. tostring(BINGO.selected_player) .. "/" .. tostring(#BINGO.players) .. ")")
-  ui_text("Player seed: " .. tostring(BINGO.player_seed[p] or ""))
-
-  if #list == 0 then
-    ui_text("(no cards)")
-    return
-  end
-
-  if BINGO.selected_card < 1 then BINGO.selected_card = 1 end
-  if BINGO.selected_card > #list then BINGO.selected_card = #list end
-
-  if ui_button("< Prev Card##prev_card") then
-    BINGO.selected_card = BINGO.selected_card - 1
-    if BINGO.selected_card < 1 then BINGO.selected_card = #list end
-  end
-  ui_same_line()
-  if ui_button("Next Card >##next_card") then
-    BINGO.selected_card = BINGO.selected_card + 1
-    if BINGO.selected_card > #list then BINGO.selected_card = 1 end
-  end
-  ui_same_line()
-  if ui_button("Send Catchup##dealer_view_send_catchup") then
-    local worldName = (dealer_get_world ~= nil) and tostring(dealer_get_world(p) or "Unknown") or "Unknown"
-    if send_catchup_to_player(p, worldName, true) then
-      BINGO.info = "Catchup override sent to " .. tostring(p)
+  if show_dealer_view then
+    if #BINGO.players == 0 then
+      ui_text("(no active round)")
     else
-      BINGO.info = "Catchup override failed for " .. tostring(p)
+      if BINGO.selected_player < 1 then BINGO.selected_player = 1 end
+      if BINGO.selected_player > #BINGO.players then BINGO.selected_player = #BINGO.players end
+
+      if ui_button("< Prev Player##prev_player") then
+        BINGO.selected_player = BINGO.selected_player - 1
+        if BINGO.selected_player < 1 then BINGO.selected_player = #BINGO.players end
+        BINGO.selected_card = 1
+      end
+      ui_same_line()
+      if ui_button("Next Player >##next_player") then
+        BINGO.selected_player = BINGO.selected_player + 1
+        if BINGO.selected_player > #BINGO.players then BINGO.selected_player = 1 end
+        BINGO.selected_card = 1
+      end
+
+      local p = BINGO.players[BINGO.selected_player]
+      local list = BINGO.cards[p] or {}
+      ui_text("Viewing: " .. tostring(p) .. " (" .. tostring(BINGO.selected_player) .. "/" .. tostring(#BINGO.players) .. ")")
+      ui_text("Player seed: " .. tostring(BINGO.player_seed[p] or ""))
+
+      if #list == 0 then
+        ui_text("(no cards)")
+      else
+        if BINGO.selected_card < 1 then BINGO.selected_card = 1 end
+        if BINGO.selected_card > #list then BINGO.selected_card = #list end
+
+        if ui_button("< Prev Card##prev_card") then
+          BINGO.selected_card = BINGO.selected_card - 1
+          if BINGO.selected_card < 1 then BINGO.selected_card = #list end
+        end
+        ui_same_line()
+        if ui_button("Next Card >##next_card") then
+          BINGO.selected_card = BINGO.selected_card + 1
+          if BINGO.selected_card > #list then BINGO.selected_card = 1 end
+        end
+        ui_same_line()
+        if ui_button("Send Catchup##dealer_view_send_catchup") then
+          local worldName = (dealer_get_world ~= nil) and tostring(dealer_get_world(p) or "Unknown") or "Unknown"
+          if send_catchup_to_player(p, worldName, true) then
+            BINGO.info = "Catchup override sent to " .. tostring(p)
+          else
+            BINGO.info = "Catchup override failed for " .. tostring(p)
+          end
+        end
+
+        ui_text("Card " .. tostring(BINGO.selected_card) .. " / " .. tostring(#list))
+        local card = list[BINGO.selected_card]
+        if draw_card ~= nil then
+          draw_card(card, p, BINGO.selected_card)
+        else
+          local cols = { "B", "I", "N", "G", "O" }
+          -- Header row
+          for col = 1, 5 do
+            local lbl = "  " .. cols[col] .. "  "
+            ui_button_colored_sized(lbl .. "##bingo_hdr_" .. tostring(col), 46, 0, 0.18, 0.22, 0.30, 1.0)
+            if col < 5 then ui_same_line() end
+          end
+          -- Cell rows
+          for row = 1, 5 do
+            for col = 1, 5 do
+              local key = cols[col]
+              local v = card.values[key][row]
+              local marked = card.marks[key][row]
+              local lbl
+              if v == "FREE" then
+                lbl = " FREE##bingo_cell_" .. tostring(col) .. "_" .. tostring(row)
+                ui_button_colored_sized(lbl, 46, 0, 0.15, 0.55, 0.15, 1.0)
+              elseif marked then
+                lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
+                ui_button_colored_sized(lbl, 46, 0, 0.10, 0.55, 0.10, 1.0)
+              else
+                lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
+                ui_button_colored_sized(lbl, 46, 0, 0.20, 0.22, 0.28, 1.0)
+              end
+              if col < 5 then ui_same_line() end
+            end
+          end
+        end
+      end
     end
   end
 
-  ui_text("Card " .. tostring(BINGO.selected_card) .. " / " .. tostring(#list))
-  local card = list[BINGO.selected_card]
-  if draw_card ~= nil then
-    draw_card(card, p, BINGO.selected_card)
-  else
-    local cols = { "B", "I", "N", "G", "O" }
-    -- Header row
-    for col = 1, 5 do
-      local lbl = "  " .. cols[col] .. "  "
-      ui_button_colored_sized(lbl .. "##bingo_hdr_" .. tostring(col), 46, 0, 0.18, 0.22, 0.30, 1.0)
-      if col < 5 then ui_same_line() end
-    end
-    -- Cell rows
-    for row = 1, 5 do
-      for col = 1, 5 do
-        local key = cols[col]
-        local v = card.values[key][row]
-        local marked = card.marks[key][row]
-        local lbl
-        if v == "FREE" then
-          lbl = " FREE##bingo_cell_" .. tostring(col) .. "_" .. tostring(row)
-          ui_button_colored_sized(lbl, 46, 0, 0.15, 0.55, 0.15, 1.0)
-        elseif marked then
-          lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
-          ui_button_colored_sized(lbl, 46, 0, 0.10, 0.55, 0.10, 1.0)
-        else
-          lbl = string.format(" %2s  ##bingo_cell_%d_%d", tostring(v), col, row)
-          ui_button_colored_sized(lbl, 46, 0, 0.20, 0.22, 0.28, 1.0)
-        end
-        if col < 5 then ui_same_line() end
-      end
+  ui_separator()
+  if ui_collapsing_header ~= nil then
+    BINGO.show_help = ui_collapsing_header("Bingo Help##bingo_help_section")
+  end
+
+  if BINGO.show_help == true then
+    ui_text_colored("Commands", 0.9, 0.95, 1.0, 1.0)
+    ui_text("/casino new        - Start a new Bingo round and send player links.")
+    ui_text("/casino draw       - Draw next ball.")
+    ui_text("/casino resend     - Resend Bingo links to active players.")
+    ui_text("Players claim with chat: bingo <catchup-code>")
+    ui_separator()
+    ui_text_colored("Tips", 0.9, 0.95, 1.0, 1.0)
+    ui_text("Use Draw Next Ball once to kick off autodraw when enabled.")
+    ui_text("Dealer Card View is only for table oversight; players use tells/web cards.")
+    ui_text("Catchup code changes every round; use Resend Links if someone missed theirs.")
+    ui_separator()
+  end
+end
     end
   end
 end
 
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
   ui_text_colored("Bingo Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
+  ui_text("Config status: " .. tostring(BINGO.config_status or ""))
   ui_text("Web URL base for tells")
   ui_text(BINGO.web_base_url)
 
@@ -1383,6 +1602,12 @@ function draw_config_ui()
   end
 
   ui_separator()
-  ui_text_colored("Player List", 0.9, 0.95, 1.0, 1.0)
-  ui_text("Bingo uses the roster order (by dealer position). No turn-order randomization is applied.")
+  if ui_button("Save Config##bingo_cfg_save") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##bingo_cfg_load") then
+    load_config_file()
+  end
+
 end

@@ -20,6 +20,7 @@ if SLOTS == nil then
     stats_paid = 0,
     stats_spins = 0,
     ui_line_pick = {},
+    show_help = true,
 
     strip = {
       "[  ]", -- 1
@@ -60,8 +61,12 @@ end
 -- UTILITIES & CHAT MESSAGING
 -- ============================================================================
 
+-- Function: trim_text
+-- Purpose: Handles trim text logic for the Slots script.
 local function trim_text(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 
+-- Function: output_channel_name
+-- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
   if default_chat_channel ~= nil then
     local ch = default_chat_channel()
@@ -70,12 +75,16 @@ local function output_channel_name()
   return "party"
 end
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(msg)
   local text = msg or ""
   if text == "" then return end
   if chat_send ~= nil then chat_send(output_channel_name(), text) else dealer_party(text) end
 end
 
+-- Function: send_tell_logged
+-- Purpose: Handles send tell logged logic for the Slots script.
 local function send_tell_logged(player, message)
   local p, m = trim_text(player), trim_text(message)
   if p == "" or m == "" then return end
@@ -84,6 +93,8 @@ local function send_tell_logged(player, message)
   if dealer_tell ~= nil then dealer_tell(p, world, m) end
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local template = SLOTS.chat_templates[key]
   if not template then return end
@@ -93,10 +104,110 @@ local function announce(key, ctx)
   table_announce(msg)
 end
 
+-- Function: config_file_name
+-- Purpose: Handles config file name logic for the Slots script.
+local function config_file_name()
+  return "Slots.config.json"
+end
+
+-- Function: echo_notice
+-- Purpose: Handles echo notice logic for the Slots script.
+local function echo_notice(msg)
+  local text = tostring(msg or "")
+  if text == "" then return end
+  if chat_send ~= nil then
+    chat_send("echo", text)
+  elseif dealer_party ~= nil then
+    dealer_party(text)
+  end
+end
+
+-- Function: export_config_blob
+-- Purpose: Handles export config blob logic for the Slots script.
+local function export_config_blob()
+  local c = SLOTS.config or {}
+  local s = "return {"
+    .. "min_bet_per_line=" .. tostring(math.floor(tonumber(c.min_bet_per_line) or 5)) .. ","
+    .. "max_bet_per_line=" .. tostring(math.floor(tonumber(c.max_bet_per_line) or 100)) .. ","
+    .. "reel_stop_delay_ms=" .. tostring(math.floor(tonumber(c.reel_stop_delay_ms) or 400)) .. ","
+    .. "show_help=" .. tostring(SLOTS.show_help == true)
+    .. "}"
+  return s
+end
+
+-- Function: apply_config_table
+-- Purpose: Handles apply config table logic for the Slots script.
+local function apply_config_table(data)
+  if type(data) ~= "table" then return false end
+  SLOTS.config = SLOTS.config or {}
+  if data.min_bet_per_line ~= nil then SLOTS.config.min_bet_per_line = tonumber(data.min_bet_per_line) or SLOTS.config.min_bet_per_line end
+  if data.max_bet_per_line ~= nil then SLOTS.config.max_bet_per_line = tonumber(data.max_bet_per_line) or SLOTS.config.max_bet_per_line end
+  if data.reel_stop_delay_ms ~= nil then SLOTS.config.reel_stop_delay_ms = tonumber(data.reel_stop_delay_ms) or SLOTS.config.reel_stop_delay_ms end
+  if data.show_help ~= nil then SLOTS.show_help = (data.show_help == true) end
+  return true
+end
+
+-- Function: save_config_file
+-- Purpose: Saves config file data from runtime state.
+local function save_config_file()
+  if script_write_text == nil then
+    SLOTS.config_status = "Slots config save failed (host file API unavailable)."
+    echo_notice(SLOTS.config_status)
+    return false
+  end
+  local ok = script_write_text(config_file_name(), export_config_blob()) == true
+  if ok then
+    SLOTS.config_status = "Slots config saved."
+  else
+    SLOTS.config_status = "Slots config save failed."
+  end
+  echo_notice(SLOTS.config_status)
+  return ok
+end
+
+-- Function: load_config_file
+-- Purpose: Loads config file data into runtime state.
+local function load_config_file()
+  if script_read_text == nil then
+    SLOTS.config_status = "Slots config load skipped (host file API unavailable)."
+    return false
+  end
+  local raw = script_read_text(config_file_name())
+  if raw == nil or raw == "" then
+    SLOTS.config_status = "Slots config file not found."
+    return false
+  end
+  local loader = loadstring or load
+  local fn, err = loader(tostring(raw))
+  if not fn then
+    SLOTS.config_status = "Slots config syntax error: " .. tostring(err)
+    return false
+  end
+  local ok, data = pcall(fn)
+  if not ok then
+    SLOTS.config_status = "Slots config runtime error: " .. tostring(data)
+    return false
+  end
+  if not apply_config_table(data) then
+    SLOTS.config_status = "Slots config invalid payload."
+    return false
+  end
+  SLOTS.config_status = "Slots config loaded."
+  return true
+end
+
+if SLOTS.config_status == nil then SLOTS.config_status = "Slots config not loaded yet." end
+if SLOTS._config_loaded ~= true then
+  load_config_file()
+  SLOTS._config_loaded = true
+end
+
 -- ============================================================================
 -- GRID OUTPUT LOGIC (RESTORED)
 -- ============================================================================
 
+-- Function: queue_grid_announce
+-- Purpose: Queues grid announce so it can be handled in turn order.
 local function queue_grid_announce(grid, result)
   if grid == nil then return end
   local now = tonumber(time_ms()) or 0
@@ -110,6 +221,8 @@ local function queue_grid_announce(grid, result)
   SLOTS.pending_result = result
 end
 
+-- Function: process_pending_announcements
+-- Purpose: Processes pending announcements updates for the current game state.
 local function process_pending_announcements()
   local lines = SLOTS.pending_grid_lines
   if lines == nil then return end
@@ -136,12 +249,29 @@ local function process_pending_announcements()
       end
     end
   end
+
+  ui_separator()
+  if ui_collapsing_header ~= nil then
+    SLOTS.show_help = ui_collapsing_header("Slots Help##slots_help")
+  end
+  if SLOTS.show_help == true then
+    ui_text_colored("How It Works", 0.9, 0.95, 1.0, 1.0)
+    ui_text("Players queue by chat command, then roll /dice for seeded spin results.")
+    ui_text("1 line uses 1 roll; multi-line spins use 3 rolls.")
+    ui_text("Cost = bet per line x selected lines; wager is withdrawn at spin start.")
+    ui_separator()
+    ui_text_colored("Dealer Tips", 0.9, 0.95, 1.0, 1.0)
+    ui_text("Use Queue buttons while idle for manual queueing.")
+    ui_text("Use Force Roll for AFK players when waiting for required dice.")
+  end
 end
 
 -- ============================================================================
 -- FFXIV NAME PARSER & ELIGIBILITY
 -- ============================================================================
 
+-- Function: normalize_player_name
+-- Purpose: Normalizes player name into a consistent format for comparisons.
 local function normalize_player_name(name)
   local n = string.lower(tostring(name or ""))
   n = n:gsub("[^\32-\126]", "")
@@ -152,6 +282,8 @@ local function normalize_player_name(name)
   return n
 end
 
+-- Function: resolve_eligible_player
+-- Purpose: Handles resolve eligible player logic for the Slots script.
 local function resolve_eligible_player(raw_name)
   local speaker = normalize_player_name(raw_name)
   if speaker == "" then return nil end
@@ -168,6 +300,8 @@ local function resolve_eligible_player(raw_name)
   return (dealer_is_eligible and dealer_is_eligible(raw_name)) and raw_name or nil
 end
 
+-- Function: message_is_from_expected_roller
+-- Purpose: Handles message is from expected roller logic for the Slots script.
 local function message_is_from_expected_roller(name, message)
   if SLOTS.active_spin == nil then return false end
   local expected = normalize_player_name(SLOTS.active_spin.player)
@@ -188,6 +322,8 @@ end
 -- CORE MATH & SYMBOL LOGIC
 -- ============================================================================
 
+-- Function: canonical_symbol
+-- Purpose: Handles canonical symbol logic for the Slots script.
 local function canonical_symbol(sym)
   local s = tostring(sym or "")
   if s:find("") or s:find("7") then return "7" end
@@ -200,6 +336,8 @@ local function canonical_symbol(sym)
   return "EMPTY"
 end
 
+-- Function: eval_line
+-- Purpose: Handles eval line logic for the Slots script.
 local function eval_line(sym1, sym2, sym3, bet)
   local c1, c2, c3 = canonical_symbol(sym1), canonical_symbol(sym2), canonical_symbol(sym3)
   local count_7 = 0
@@ -224,6 +362,8 @@ end
 -- ENGINE LOGIC
 -- ============================================================================
 
+-- Function: execute_spin
+-- Purpose: Handles execute spin logic for the Slots script.
 local function execute_spin(player_name, lines, bet, rolls)
   local now = tonumber(time_ms()) or 0
   local delay = SLOTS.config.reel_stop_delay_ms
@@ -237,12 +377,16 @@ local function execute_spin(player_name, lines, bet, rolls)
   SLOTS.phase = "spinning"
 end
 
+-- Function: process_active_spin
+-- Purpose: Processes active spin updates for the current game state.
 local function process_active_spin()
   if SLOTS.phase ~= "spinning" or not SLOTS.active_spin then return end
   local now = tonumber(time_ms()) or 0
   local s = SLOTS.active_spin
   local final = (#s.rows <= 1) and s.stop_1 or s.stop_3
   if now >= final then
+    -- Function: get_s
+    -- Purpose: Handles get s logic for the Slots script.
     local function get_s(r_idx, c_idx) return SLOTS.strip[s.rows[r_idx][c_idx]] end
     local t, m, b = {}, {}, {}
     if #s.rows <= 1 then
@@ -254,6 +398,8 @@ local function process_active_spin()
     end
     local grid = {t1=t[1],t2=t[2],t3=t[3], m1=m[1],m2=m[2],m3=m[3], b1=b[1],b2=b[2],b3=b[3]}
     local win, l_won, reasons = 0, 0, {}
+    -- Function: check
+    -- Purpose: Handles check logic for the Slots script.
     local function check(s1,s2,s3,label)
       local p, r = eval_line(s1,s2,s3,s.bet)
       if p > 0 then win = win + p; l_won = l_won + 1; table.insert(reasons, label..":"..r) end
@@ -279,6 +425,8 @@ end
 -- INPUT PROCESSING & QUEUE
 -- ============================================================================
 
+-- Function: process_chat_inputs
+-- Purpose: Processes chat inputs updates for the current game state.
 local function process_chat_inputs()
   for _ = 1, 15 do
     local pkt = (chat_poll ~= nil) and chat_poll() or ""
@@ -337,12 +485,25 @@ end
 -- UI RENDERING
 -- ============================================================================
 
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
+  ui_text("Config status: " .. tostring(SLOTS.config_status or ""))
   SLOTS.config.min_bet_per_line = math.max(1, ui_input_int("Min Bet", SLOTS.config.min_bet_per_line))
   SLOTS.config.max_bet_per_line = math.max(1, ui_input_int("Max Bet", SLOTS.config.max_bet_per_line))
   SLOTS.config.reel_stop_delay_ms = math.max(100, ui_input_int("Delay (ms)", SLOTS.config.reel_stop_delay_ms))
+  ui_separator()
+  if ui_button("Save Config##slots_cfg_save") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##slots_cfg_load") then
+    load_config_file()
+  end
 end
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   process_chat_inputs()
   process_pending_announcements() -- RESTORED: Prints the grid to chat
@@ -371,6 +532,8 @@ function draw_ui()
   local g = { t={"[ - ]","[ - ]","[ - ]"}, m={"[ - ]","[ - ]","[ - ]"}, b={"[ - ]","[ - ]","[ - ]"} }
   if SLOTS.phase == "spinning" and SLOTS.active_spin then
     local s, n = SLOTS.active_spin, tonumber(time_ms()) or 0
+    -- Function: anim
+    -- Purpose: Handles anim logic for the Slots script.
     local function anim(row, d, r_idx) 
       if n < d then 
         local a=(math.floor(n/50)%10)+1 
@@ -415,6 +578,8 @@ function draw_ui()
       if dealer_is_eligible(n) then
         ui_text(n); ui_same_line()
         local pick = SLOTS.ui_line_pick[n] or 8
+        -- Function: lp_btn
+        -- Purpose: Handles lp btn logic for the Slots script.
         local function lp_btn(lbl, v)
           if pick == v and ui_button_colored then return ui_button_colored(lbl.."##"..n..v, 0.2, 0.8, 0.2, 1.0) end
           return ui_button(lbl.."##"..n..v)

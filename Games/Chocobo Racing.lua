@@ -33,6 +33,8 @@ if CR == nil then
   }
 end
 
+-- Function: output_channel_name
+-- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
   if default_chat_channel ~= nil then
     local ch = default_chat_channel()
@@ -43,6 +45,8 @@ local function output_channel_name()
   return "party"
 end
 
+-- Function: effective_chat_delay_ms
+-- Purpose: Handles effective chat delay ms logic for the Chocobo Racing script.
 local function effective_chat_delay_ms()
   local v = tonumber(CR.chat_delay_ms) or 1000
   if v < 100 then v = 100 end
@@ -51,6 +55,8 @@ local function effective_chat_delay_ms()
   return CR.chat_delay_ms
 end
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(message)
   local msg = message or ""
   if msg == "" then return end
@@ -61,6 +67,8 @@ local function table_announce(message)
   CR.next_chat_at = at + effective_chat_delay_ms()
 end
 
+-- Function: process_pending_chat
+-- Purpose: Processes pending chat updates for the current game state.
 local function process_pending_chat()
   if CR.pending_chat == nil or #CR.pending_chat == 0 then return end
   local now = (time_ms ~= nil) and time_ms() or 0
@@ -76,6 +84,8 @@ local function process_pending_chat()
   end
 end
 
+-- Function: fmt
+-- Purpose: Formats a chat template by replacing tokens with runtime values.
 local function fmt(template, ctx)
   if chat_format ~= nil then
     return chat_format(
@@ -106,6 +116,8 @@ local function fmt(template, ctx)
   return msg
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local t = CR.chat_templates or {}
   local template = t[key]
@@ -113,6 +125,104 @@ local function announce(key, ctx)
   table_announce(fmt(template, ctx))
 end
 
+-- Function: config_file_name
+-- Purpose: Handles config file name logic for the Chocobo Racing script.
+local function config_file_name()
+  return "Chocobo Racing.config.json"
+end
+
+-- Function: echo_notice
+-- Purpose: Handles echo notice logic for the Chocobo Racing script.
+local function echo_notice(msg)
+  local text = tostring(msg or "")
+  if text == "" then return end
+  if chat_send ~= nil then
+    chat_send("echo", text)
+  elseif dealer_party ~= nil then
+    dealer_party(text)
+  end
+end
+
+-- Function: export_config_blob
+-- Purpose: Handles export config blob logic for the Chocobo Racing script.
+local function export_config_blob()
+  local s = "return {"
+    .. "chat_delay_ms=" .. tostring(math.floor(tonumber(CR.chat_delay_ms) or 1000)) .. ","
+    .. "track_width=" .. tostring(math.floor(tonumber(CR.track_width) or 75)) .. ","
+    .. "race_duration_ms=" .. tostring(math.floor(tonumber(CR.race_duration_ms) or 30000)) .. ","
+    .. "house_seed=" .. tostring(math.floor(tonumber(CR.house_seed) or 1000))
+    .. "}"
+  return s
+end
+
+-- Function: apply_config_table
+-- Purpose: Handles apply config table logic for the Chocobo Racing script.
+local function apply_config_table(data)
+  if type(data) ~= "table" then return false end
+  if data.chat_delay_ms ~= nil then CR.chat_delay_ms = tonumber(data.chat_delay_ms) or CR.chat_delay_ms end
+  if data.track_width ~= nil then CR.track_width = tonumber(data.track_width) or CR.track_width end
+  if data.race_duration_ms ~= nil then CR.race_duration_ms = tonumber(data.race_duration_ms) or CR.race_duration_ms end
+  if data.house_seed ~= nil then CR.house_seed = tonumber(data.house_seed) or CR.house_seed end
+  return true
+end
+
+-- Function: save_config_file
+-- Purpose: Saves config file data from runtime state.
+local function save_config_file()
+  if script_write_text == nil then
+    CR.config_status = "Chocobo Racing config save failed (host file API unavailable)."
+    echo_notice(CR.config_status)
+    return false
+  end
+  local ok = script_write_text(config_file_name(), export_config_blob()) == true
+  if ok then
+    CR.config_status = "Chocobo Racing config saved."
+  else
+    CR.config_status = "Chocobo Racing config save failed."
+  end
+  echo_notice(CR.config_status)
+  return ok
+end
+
+-- Function: load_config_file
+-- Purpose: Loads config file data into runtime state.
+local function load_config_file()
+  if script_read_text == nil then
+    CR.config_status = "Chocobo Racing config load skipped (host file API unavailable)."
+    return false
+  end
+  local raw = script_read_text(config_file_name())
+  if raw == nil or raw == "" then
+    CR.config_status = "Chocobo Racing config file not found."
+    return false
+  end
+  local loader = loadstring or load
+  local fn, err = loader(tostring(raw))
+  if not fn then
+    CR.config_status = "Chocobo Racing config syntax error: " .. tostring(err)
+    return false
+  end
+  local ok, data = pcall(fn)
+  if not ok then
+    CR.config_status = "Chocobo Racing config runtime error: " .. tostring(data)
+    return false
+  end
+  if not apply_config_table(data) then
+    CR.config_status = "Chocobo Racing config invalid payload."
+    return false
+  end
+  CR.config_status = "Chocobo Racing config loaded."
+  return true
+end
+
+if CR.config_status == nil then CR.config_status = "Chocobo Racing config not loaded yet." end
+if CR._config_loaded ~= true then
+  load_config_file()
+  CR._config_loaded = true
+end
+
+-- Function: seed_once
+-- Purpose: Handles seed once logic for the Chocobo Racing script.
 local function seed_once()
   if CR._seeded then return end
   local seed = 12345
@@ -209,10 +319,14 @@ local finale_lines = {
   "Late drama! <A> and <B> are separated by feathers!"
 }
 
+-- Function: pick
+-- Purpose: Handles pick logic for the Chocobo Racing script.
 local function pick(list)
   return list[math.random(1, #list)]
 end
 
+-- Function: shuffle
+-- Purpose: Handles shuffle logic for the Chocobo Racing script.
 local function shuffle(list)
   if list == nil then return end
   for i = #list, 2, -1 do
@@ -221,6 +335,8 @@ local function shuffle(list)
   end
 end
 
+-- Function: fill_tokens
+-- Purpose: Handles fill tokens logic for the Chocobo Racing script.
 local function fill_tokens(line, racers)
   local out = line
   out = string.gsub(out, "<A>", racers[1].name)
@@ -232,6 +348,8 @@ local function fill_tokens(line, racers)
   return out
 end
 
+-- Function: sort_by_progress_desc
+-- Purpose: Handles sort by progress desc logic for the Chocobo Racing script.
 local function sort_by_progress_desc(a, b)
   local ap = (a and tonumber(a.progress)) or 0
   local bp = (b and tonumber(b.progress)) or 0
@@ -253,6 +371,8 @@ local lead_change_lines = {
   "Big move from <new> — past <old> for first!",
 }
 
+-- Function: lead_change_text
+-- Purpose: Handles lead change text logic for the Chocobo Racing script.
 local function lead_change_text(newLeader, oldLeader)
   if newLeader == nil then return "" end
   if oldLeader == nil then return "" end
@@ -262,6 +382,8 @@ local function lead_change_text(newLeader, oldLeader)
   return t
 end
 
+-- Function: build_track_line
+-- Purpose: Handles build track line logic for the Chocobo Racing script.
 local function build_track_line(sortedDesc)
   local width = tonumber(CR.track_width) or 75
   if width < 30 then width = 30 end
@@ -302,6 +424,8 @@ local function build_track_line(sortedDesc)
   return table.concat(chars, "")
 end
 
+-- Function: build_full_pool
+-- Purpose: Handles build full pool logic for the Chocobo Racing script.
 local function build_full_pool()
   seed_once()
   CR.full_pool = {}
@@ -333,6 +457,8 @@ local function build_full_pool()
   end
 end
 
+-- Function: precompute_field_segments
+-- Purpose: Handles precompute field segments logic for the Chocobo Racing script.
 local function precompute_field_segments()
   local max_total = 1
   for i = 1, #CR.field do
@@ -365,6 +491,8 @@ local function precompute_field_segments()
   CR.track_max_progress = max_total
 end
 
+-- Function: generate_field
+-- Purpose: Handles generate field logic for the Chocobo Racing script.
 local function generate_field()
   build_full_pool()
   local tmp = {}
@@ -400,6 +528,8 @@ local function generate_field()
   CR.info = "Field generated. Open betting when ready."
 end
 
+-- Function: announce_betting_board
+-- Purpose: Handles announce betting board logic for the Chocobo Racing script.
 local function announce_betting_board()
   table_announce("Betting is now OPEN.")
   for i = 1, #CR.field do
@@ -408,6 +538,8 @@ local function announce_betting_board()
   end
 end
 
+-- Function: find_racer_by_number
+-- Purpose: Handles find racer by number logic for the Chocobo Racing script.
 local function find_racer_by_number(num)
   for i = 1, #CR.field do
     if CR.field[i].number == num then
@@ -417,10 +549,14 @@ local function find_racer_by_number(num)
   return nil
 end
 
+-- Function: normalize_text
+-- Purpose: Normalizes text into a consistent format for comparisons.
 local function normalize_text(s)
   return string.lower(((s or ""):gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")))
 end
 
+-- Function: find_racer_by_name
+-- Purpose: Handles find racer by name logic for the Chocobo Racing script.
 local function find_racer_by_name(name_text)
   local q = normalize_text(name_text)
   if q == "" then return nil end
@@ -441,6 +577,8 @@ local function find_racer_by_name(name_text)
   return partial
 end
 
+-- Function: extract_bet
+-- Purpose: Extracts bet from incoming chat text.
 local function extract_bet(message)
   local m = normalize_text(message)
   if m == "" then return nil, nil end
@@ -469,6 +607,8 @@ local function extract_bet(message)
   return amount, racer.number
 end
 
+-- Function: place_bet_for_player
+-- Purpose: Handles place bet for player logic for the Chocobo Racing script.
 local function place_bet_for_player(name, pick, amount)
   if name == nil or name == "" then return false end
   if pick == nil or pick < 1 or pick > 6 then return false end
@@ -501,6 +641,8 @@ local function place_bet_for_player(name, pick, amount)
   return true
 end
 
+-- Function: process_chat_bets
+-- Purpose: Processes chat bets updates for the current game state.
 local function process_chat_bets()
   if chat_poll == nil then return end
   if CR.phase ~= "betting" then return end
@@ -519,6 +661,8 @@ local function process_chat_bets()
   end
 end
 
+-- Function: open_betting
+-- Purpose: Handles open betting logic for the Chocobo Racing script.
 local function open_betting()
   if #CR.field ~= 6 then
     generate_field()
@@ -530,6 +674,8 @@ local function open_betting()
   announce_betting_board()
 end
 
+-- Function: start_race
+-- Purpose: Starts race for the current game flow.
 local function start_race()
   if #CR.field ~= 6 then
     generate_field()
@@ -551,6 +697,8 @@ local function start_race()
   announce("race_start", {})
 end
 
+-- Function: apply_segment
+-- Purpose: Handles apply segment logic for the Chocobo Racing script.
 local function apply_segment(seg)
   for i = 1, #CR.field do
     local r = CR.field[i]
@@ -579,11 +727,15 @@ position_tones = {
   },
 }
 
+-- Function: place_tone
+-- Purpose: Handles place tone logic for the Chocobo Racing script.
 local function place_tone(place)
   local tones = position_tones[place] or position_tones[6]
   return pick(tones)
 end
 
+-- Function: segment_commentary
+-- Purpose: Handles segment commentary logic for the Chocobo Racing script.
 local function segment_commentary(seg)
   local racers = {}
   for i = 1, #CR.field do racers[i] = CR.field[i] end
@@ -641,6 +793,8 @@ local function segment_commentary(seg)
   table_announce(build_track_line(racers))
 end
 
+-- Function: finish_race
+-- Purpose: Handles finish race logic for the Chocobo Racing script.
 local function finish_race()
   local racers = {}
   for i = 1, #CR.field do racers[i] = CR.field[i] end
@@ -698,6 +852,8 @@ local function finish_race()
   CR.info = "Race complete. Winner: #" .. tostring(winner.number) .. " " .. winner.name
 end
 
+-- Function: process_race_tick
+-- Purpose: Processes race tick updates for the current game state.
 local function process_race_tick()
   if CR.phase ~= "racing" then return end
 
@@ -717,6 +873,8 @@ local function process_race_tick()
   end
 end
 
+-- Function: on_command
+-- Purpose: Routes script commands and executes command-specific game actions.
 function on_command(cmd, ...)
   local command = string.lower(tostring(cmd or ""))
 
@@ -738,9 +896,12 @@ function on_command(cmd, ...)
   return "unknown"
 end
 
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
   ui_text_colored("Chocobo Racing Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
+  ui_text("Config status: " .. tostring(CR.config_status or ""))
 
   CR.chat_delay_ms = ui_input_int("Chat message delay (ms)", effective_chat_delay_ms())
   effective_chat_delay_ms()
@@ -759,8 +920,18 @@ function draw_config_ui()
 
   ui_text("Commentary interval: every " .. tostring(math.floor((tonumber(CR.commentary_interval_ms) or 5000) / 1000)) .. " seconds")
   ui_text("Field size: 6 racers from a generated pool of 36")
+  ui_separator()
+  if ui_button("Save Config##choco_sp_cfg_save") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##choco_sp_cfg_load") then
+    load_config_file()
+  end
 end
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   if #CR.field ~= 6 then
     generate_field()

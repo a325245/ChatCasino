@@ -41,10 +41,14 @@ if TH == nil then
       roll_result = "",
       roll_hold_and_count = "<player> running total so far: <total>. Rolling <result> dice.",
       winner = "Threes winner: <result> with <total>.",
-    }
+    },
+
+    show_help = true,
   }
 end
 
+-- Function: output_channel_name
+-- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
   if default_chat_channel ~= nil then
     local ch = default_chat_channel()
@@ -55,6 +59,8 @@ local function output_channel_name()
   return "party"
 end
 
+-- Function: normalize_channel
+-- Purpose: Normalizes channel into a consistent format for comparisons.
 local function normalize_channel(ch)
   local c = string.lower(tostring(ch or "party"))
   if c ~= "echo" and c ~= "say" and c ~= "party" and c ~= "shout" and c ~= "yell" then
@@ -63,6 +69,8 @@ local function normalize_channel(ch)
   return c
 end
 
+-- Function: normalize_player_name
+-- Purpose: Normalizes player name into a consistent format for comparisons.
 local function normalize_player_name(name)
   local n = string.lower(tostring(name or ""))
   n = string.gsub(n, "@.*$", "")
@@ -73,6 +81,8 @@ local function normalize_player_name(name)
   return n
 end
 
+-- Function: names_match_loose
+-- Purpose: Compares two player names using relaxed matching rules.
 local function names_match_loose(a, b)
   local na = normalize_player_name(a)
   local nb = normalize_player_name(b)
@@ -81,6 +91,8 @@ local function names_match_loose(a, b)
   return (string.find(na, nb, 1, true) ~= nil) or (string.find(nb, na, 1, true) ~= nil)
 end
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(message)
   local msg = message or ""
   if msg == "" then return end
@@ -91,6 +103,8 @@ local function table_announce(message)
   end
 end
 
+-- Function: fmt
+-- Purpose: Formats a chat template by replacing tokens with runtime values.
 local function fmt(template, ctx)
   if chat_format ~= nil then
     return chat_format(
@@ -123,6 +137,8 @@ local function fmt(template, ctx)
   return msg
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local t = TH.chat_templates or {}
   local template = t[key]
@@ -137,11 +153,15 @@ local function announce(key, ctx)
   end
 end
 
+-- Function: active_player_name
+-- Purpose: Handles active player name logic for the Threes script.
 local function active_player_name()
   if TH.active_index < 1 or TH.active_index > #TH.order then return "" end
   return TH.order[TH.active_index] or ""
 end
 
+-- Function: reset_turn_dice
+-- Purpose: Handles reset turn dice logic for the Threes script.
 local function reset_turn_dice()
   TH.dice = {}
   for i = 1, 5 do
@@ -166,11 +186,15 @@ local function reset_turn_dice()
   TH.dealer_ai = nil
 end
 
+-- Function: effective_roll_delay_ms
+-- Purpose: Handles effective roll delay ms logic for the Threes script.
 local function effective_roll_delay_ms()
   TH.roll_delay_ms = 1000
   return TH.roll_delay_ms
 end
 
+-- Function: effective_roll_timeout_ms
+-- Purpose: Handles effective roll timeout ms logic for the Threes script.
 local function effective_roll_timeout_ms()
   local t = tonumber(TH.roll_timeout_ms) or 2500
   local minByDelay = effective_roll_delay_ms() * 20
@@ -181,6 +205,8 @@ local function effective_roll_timeout_ms()
   return TH.roll_timeout_ms
 end
 
+-- Function: all_held
+-- Purpose: Handles all held logic for the Threes script.
 local function all_held()
   for i = 1, 5 do
     if not TH.dice[i].held then return false end
@@ -188,6 +214,8 @@ local function all_held()
   return true
 end
 
+-- Function: held_count
+-- Purpose: Handles held count logic for the Threes script.
 local function held_count()
   local c = 0
   for i = 1, 5 do
@@ -196,6 +224,8 @@ local function held_count()
   return c
 end
 
+-- Function: held_score_so_far
+-- Purpose: Handles held score so far logic for the Threes script.
 local function held_score_so_far()
   local total = 0
   for i = 1, 5 do
@@ -208,6 +238,8 @@ local function held_score_so_far()
   return total
 end
 
+-- Function: is_slot_pending
+-- Purpose: Handles is slot pending logic for the Threes script.
 local function is_slot_pending(index)
   for i = 1, #TH.pending_slots do
     if TH.pending_slots[i] == index then return true end
@@ -215,10 +247,14 @@ local function is_slot_pending(index)
   return false
 end
 
+-- Function: dice_word
+-- Purpose: Handles dice word logic for the Threes script.
 local function dice_word(n)
   return (tonumber(n) or 0) == 1 and "die" or "dice"
 end
 
+-- Function: score_from_dice
+-- Purpose: Handles score from dice logic for the Threes script.
 local function score_from_dice(dice)
   local total = 0
   for i = 1, 5 do
@@ -228,10 +264,14 @@ local function score_from_dice(dice)
   return total
 end
 
+-- Function: turn_score
+-- Purpose: Handles turn score logic for the Threes script.
 local function turn_score()
   return score_from_dice(TH.dice)
 end
 
+-- Function: finalize_vs_dealer_round
+-- Purpose: Handles finalize vs dealer round logic for the Threes script.
 local function finalize_vs_dealer_round()
   table_announce("Dealer locks a score of " .. tostring(TH.dealer_score) .. ".")
 
@@ -289,6 +329,8 @@ local function finalize_vs_dealer_round()
   TH.info = "Round over. Dealer scored " .. tostring(TH.dealer_score) .. "."
 end
 
+-- Function: start_dealer_ai_turn
+-- Purpose: Starts dealer ai turn for the current game flow.
 local function start_dealer_ai_turn()
   local dice = {}
   for i = 1, 5 do
@@ -312,10 +354,14 @@ local function start_dealer_ai_turn()
   table_announce("Dealer turn starts.")
 end
 
+-- Function: process_dealer_ai_turn
+-- Purpose: Processes dealer ai turn updates for the current game state.
 local function process_dealer_ai_turn()
   local ai = TH.dealer_ai
   if TH.phase ~= "dealer_turn" or ai == nil then return end
 
+  -- Function: ai_unheld_count
+  -- Purpose: Handles ai unheld count logic for the Threes script.
   local function ai_unheld_count()
     local n = 0
     for i = 1, 5 do
@@ -324,6 +370,8 @@ local function process_dealer_ai_turn()
     return n
   end
 
+  -- Function: ai_rolled_snapshot
+  -- Purpose: Handles ai rolled snapshot logic for the Threes script.
   local function ai_rolled_snapshot()
     local parts = {}
     for _, i in ipairs(ai.rolled_now) do
@@ -502,6 +550,8 @@ local function process_dealer_ai_turn()
   end
 end
 
+-- Function: finish_round
+-- Purpose: Handles finish round logic for the Threes script.
 local function finish_round()
   TH.phase = "finished"
 
@@ -531,6 +581,8 @@ end
 
 local request_roll_for_unheld
 
+-- Function: finish_turn
+-- Purpose: Handles finish turn logic for the Threes script.
 local function finish_turn()
   local player = active_player_name()
   if player == "" then return end
@@ -552,6 +604,8 @@ local function finish_turn()
   announce("turn_start", { player = nextPlayer })
 end
 
+-- Function: start_round
+-- Purpose: Starts round for the current game flow.
 local function start_round()
   TH.order = {}
   TH.scores = {}
@@ -663,6 +717,8 @@ request_roll_for_unheld = function()
   end
 end
 
+-- Function: process_dice_chat
+-- Purpose: Processes dice chat updates for the current game state.
 local function process_dice_chat()
   if chat_poll == nil then return end
   if not TH.awaiting_rolls then
@@ -782,6 +838,8 @@ local function process_dice_chat()
   end
 end
 
+-- Function: hold_die
+-- Purpose: Handles hold die logic for the Threes script.
 local function hold_die(index)
   if TH.phase ~= "turn_active" then return end
   if TH.awaiting_rolls then return end
@@ -820,6 +878,8 @@ local function hold_die(index)
   TH.info = "Held total so far: " .. tostring(held_score_so_far()) .. ". Roll again or hold more dice."
 end
 
+-- Function: fixed_button_label
+-- Purpose: Handles fixed button label logic for the Threes script.
 local function fixed_button_label(text, id)
   local t = tostring(text or "")
   local width = 6
@@ -830,6 +890,8 @@ local function fixed_button_label(text, id)
   return string.rep(" ", left + 1) .. t .. string.rep(" ", right + 1) .. "##" .. id
 end
 
+-- Function: draw_die_face
+-- Purpose: Handles draw die face logic for the Threes script.
 local function draw_die_face(index)
   local d = TH.dice[index]
   local txt = "-"
@@ -849,6 +911,8 @@ local function draw_die_face(index)
   ui_button_colored_sized("[" .. txt .. "]##die_face_" .. tostring(index), 56, 0, r, g, b, 1.0)
 end
 
+-- Function: draw_die_control
+-- Purpose: Handles draw die control logic for the Threes script.
 local function draw_die_control(index)
   local d = TH.dice[index]
 
@@ -872,9 +936,12 @@ local function draw_die_control(index)
   end
 end
 
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
   ui_text_colored("Threes Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
+  ui_text("Config status: " .. tostring(TH.config_status or ""))
 
   TH.dice_channel = normalize_channel(TH.dice_channel)
   ui_text("Dice channel: " .. TH.dice_channel)
@@ -910,8 +977,19 @@ function draw_config_ui()
   t.roll_hold_and_count = ui_input_text("Roll hold+count template##th_tpl_roll_hold_count", t.roll_hold_and_count or "", 256)
   t.winner = ui_input_text("Winner template##th_tpl_winner", t.winner or "", 256)
   TH.chat_templates = t
+
+  ui_separator()
+  if ui_button("Save Config##th_cfg_save") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##th_cfg_load") then
+    load_config_file()
+  end
 end
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   if TH.dice == nil or #TH.dice < 5 then
     reset_turn_dice()
@@ -993,5 +1071,20 @@ function draw_ui()
         ui_text(p .. " -> " .. tostring(s) .. extra)
       end
     end
+  end
+
+  ui_separator()
+  if ui_collapsing_header ~= nil then
+    TH.show_help = ui_collapsing_header("Threes Help##th_help")
+  end
+  if TH.show_help == true then
+    ui_text_colored("Commands", 0.9, 0.95, 1.0, 1.0)
+    ui_text("/casino start  - Start a new Threes round.")
+    ui_text("/casino roll   - Roll unheld dice for active player.")
+    ui_text("/casino end    - End active turn when all dice are locked.")
+    ui_separator()
+    ui_text_colored("Tips", 0.9, 0.95, 1.0, 1.0)
+    ui_text("3s are auto-held and score 0.")
+    ui_text("Lowest total wins; with Dealer AI enabled each player result is W/L/Push.")
   end
 end

@@ -84,6 +84,8 @@ end
 -- ==========================================
 -- IMPORT / EXPORT LOGIC
 -- ==========================================
+-- Function: export_blob
+-- Purpose: Handles export blob logic for the Blackjack script.
 local function export_blob()
   local s = "return {config={"
   for k, v in pairs(MBJ.config) do
@@ -106,6 +108,8 @@ local function export_blob()
   return s
 end
 
+-- Function: import_blob
+-- Purpose: Handles import blob logic for the Blackjack script.
 local function import_blob(str)
   if not str or str == "" then return "Error: Input text box is empty." end
   
@@ -127,9 +131,78 @@ local function import_blob(str)
   return "SUCCESS: Configuration applied successfully!"
 end
 
+-- Function: config_file_name
+-- Purpose: Handles config file name logic for the Blackjack script.
+local function config_file_name()
+  return "Blackjack.config.json"
+end
+
+-- Function: echo_notice
+-- Purpose: Handles echo notice logic for the Blackjack script.
+local function echo_notice(msg)
+  local text = tostring(msg or "")
+  if text == "" then return end
+  if chat_send ~= nil then
+    chat_send("echo", text)
+  elseif dealer_party ~= nil then
+    dealer_party(text)
+  end
+end
+
+-- Function: save_config_file
+-- Purpose: Saves config file data from runtime state.
+local function save_config_file()
+  if script_write_text == nil then
+    MBJ.import_status = "ERROR: Host file API unavailable."
+    echo_notice("Blackjack config save failed.")
+    return false
+  end
+
+  local ok = script_write_text(config_file_name(), export_blob()) == true
+  if ok then
+    MBJ.import_status = "SUCCESS: Blackjack config saved."
+    echo_notice("Blackjack config saved.")
+  else
+    MBJ.import_status = "ERROR: Could not write Blackjack config file."
+    echo_notice("Blackjack config save failed.")
+  end
+  return ok
+end
+
+-- Function: load_config_file
+-- Purpose: Loads config file data into runtime state.
+local function load_config_file()
+  if script_read_text == nil then
+    MBJ.import_status = "ERROR: Host file API unavailable."
+    return false
+  end
+
+  local raw = script_read_text(config_file_name())
+  if raw == nil or raw == "" then
+    MBJ.import_status = "INFO: No Blackjack config file found."
+    return false
+  end
+
+  MBJ.import_status = import_blob(raw)
+  if string.find(MBJ.import_status, "SUCCESS", 1, true) then
+    echo_notice("Blackjack config loaded.")
+    return true
+  end
+
+  echo_notice("Blackjack config load failed.")
+  return false
+end
+
+if MBJ._config_loaded ~= true then
+  load_config_file()
+  MBJ._config_loaded = true
+end
+
 -- ==========================================
 -- FLUSH CHAT QUEUE: Prevents reading old rolls
 -- ==========================================
+-- Function: flush_chat
+-- Purpose: Handles flush chat logic for the Blackjack script.
 local function flush_chat()
   if chat_poll ~= nil then
     for _ = 1, 500 do
@@ -142,6 +215,8 @@ end
 -- ==========================================
 -- GAME LOGIC
 -- ==========================================
+-- Function: output_channel_name
+-- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
   if default_chat_channel ~= nil then
     local ch = default_chat_channel()
@@ -150,12 +225,16 @@ local function output_channel_name()
   return "party"
 end
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(msg)
   local text = tostring(msg or "")
   if text == "" then return end
   if chat_send ~= nil then chat_send(output_channel_name(), text) else dealer_party(text) end
 end
 
+-- Function: fmt
+-- Purpose: Formats a chat template by replacing tokens with runtime values.
 local function fmt(template, ctx)
   if chat_format ~= nil then
     return chat_format(template or "", tostring((ctx and ctx.player) or ""), tonumber((ctx and ctx.bet) or 0) or 0, tonumber((ctx and ctx.bank) or 0) or 0, tostring((ctx and ctx.card) or ""), tonumber((ctx and ctx.total) or 0) or 0, tonumber((ctx and ctx.dealer_total) or 0) or 0, tostring((ctx and ctx.result) or ""))
@@ -179,6 +258,8 @@ local function fmt(template, ctx)
   return msg
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local template = (MBJ.chat_templates or {})[key]
   if template == nil or template == "" then 
@@ -188,6 +269,8 @@ local function announce(key, ctx)
   table_announce(fmt(template, ctx))
 end
 
+-- Function: rank_name
+-- Purpose: Handles rank name logic for the Blackjack script.
 local function rank_name(v)
   local n = tonumber(v) or 0
   if n == 1 then return "A" end
@@ -197,6 +280,8 @@ local function rank_name(v)
   return tostring(n)
 end
 
+-- Function: card_value
+-- Purpose: Handles card value logic for the Blackjack script.
 local function card_value(v)
   local n = tonumber(v) or 0
   if n == 1 then return 11 end
@@ -204,6 +289,8 @@ local function card_value(v)
   return n
 end
 
+-- Function: hand_total
+-- Purpose: Handles hand total logic for the Blackjack script.
 local function hand_total(cards)
   local total = 0
   local aces = 0
@@ -219,6 +306,8 @@ local function hand_total(cards)
   return total
 end
 
+-- Function: is_natural_blackjack
+-- Purpose: Handles is natural blackjack logic for the Blackjack script.
 local function is_natural_blackjack(hand)
   if hand == nil or hand.cards == nil then return false end
   if #hand.cards ~= 2 then return false end
@@ -226,11 +315,15 @@ local function is_natural_blackjack(hand)
   return hand_total(hand.cards) == 21
 end
 
+-- Function: active_player_name
+-- Purpose: Handles active player name logic for the Blackjack script.
 local function active_player_name()
   if MBJ.active_index < 1 or MBJ.active_index > #MBJ.order then return "" end
   return MBJ.order[MBJ.active_index] or ""
 end
 
+-- Function: ensure_player
+-- Purpose: Handles ensure player logic for the Blackjack script.
 local function ensure_player(name)
   if MBJ.players[name] == nil then
     MBJ.players[name] = { hands = {}, hand_index = 1, wager = 0, splits_used = 0 }
@@ -238,6 +331,8 @@ local function ensure_player(name)
   return MBJ.players[name]
 end
 
+-- Function: active_hand
+-- Purpose: Handles active hand logic for the Blackjack script.
 local function active_hand(p)
   if p == nil then return nil end
   local hi = p.hand_index or 1
@@ -245,6 +340,8 @@ local function active_hand(p)
   return p.hands[hi]
 end
 
+-- Function: label_for
+-- Purpose: Handles label for logic for the Blackjack script.
 local function label_for(name, p, handIndex)
   local hi = handIndex or (p and p.hand_index) or 1
   if p ~= nil and p.hands ~= nil and #p.hands > 1 then
@@ -253,6 +350,8 @@ local function label_for(name, p, handIndex)
   return name
 end
 
+-- Function: next_active_hand
+-- Purpose: Handles next active hand logic for the Blackjack script.
 local function next_active_hand()
   while MBJ.active_index <= #MBJ.order do
     local name = MBJ.order[MBJ.active_index]
@@ -270,6 +369,8 @@ local function next_active_hand()
   end
 end
 
+-- Function: get_double_restriction
+-- Purpose: Handles get double restriction logic for the Blackjack script.
 local function get_double_restriction(name, p, h)
   if not MBJ.config.allow_double then return "err_dd_disabled" end
   if p == nil or h == nil then return nil end
@@ -280,10 +381,14 @@ local function get_double_restriction(name, p, h)
   return nil
 end
 
+-- Function: can_double
+-- Purpose: Handles can double logic for the Blackjack script.
 local function can_double(name, p, h)
   return get_double_restriction(name, p, h) == nil
 end
 
+-- Function: get_split_restriction
+-- Purpose: Handles get split restriction logic for the Blackjack script.
 local function get_split_restriction(name, p, h)
   if p == nil or h == nil then return nil end
   if p.splits_used >= (tonumber(MBJ.config.max_splits) or 0) then return "err_split_max" end
@@ -299,10 +404,14 @@ local function get_split_restriction(name, p, h)
   return nil
 end
 
+-- Function: can_split
+-- Purpose: Handles can split logic for the Blackjack script.
 local function can_split(name, p, h)
   return get_split_restriction(name, p, h) == nil
 end
 
+-- Function: effective_draw_delay_ms
+-- Purpose: Handles effective draw delay ms logic for the Blackjack script.
 local function effective_draw_delay_ms()
   local v = tonumber(MBJ.draw.delay_ms) or 350
   if v < 25 then v = 25 end
@@ -311,6 +420,8 @@ local function effective_draw_delay_ms()
   return MBJ.draw.delay_ms
 end
 
+-- Function: effective_initial_deal_delay_ms
+-- Purpose: Handles effective initial deal delay ms logic for the Blackjack script.
 local function effective_initial_deal_delay_ms()
   local v = tonumber(MBJ.draw.initial_deal_delay_ms) or 1000
   if v < 100 then v = 100 end
@@ -319,6 +430,8 @@ local function effective_initial_deal_delay_ms()
   return MBJ.draw.initial_deal_delay_ms
 end
 
+-- Function: effective_draw_timeout_ms
+-- Purpose: Handles effective draw timeout ms logic for the Blackjack script.
 local function effective_draw_timeout_ms()
   local t = tonumber(MBJ.draw.timeout_ms) or 1500
   local minByDelay = effective_draw_delay_ms() * 4
@@ -329,6 +442,8 @@ local function effective_draw_timeout_ms()
   return MBJ.draw.timeout_ms
 end
 
+-- Function: effective_reveal_delay_ms
+-- Purpose: Handles effective reveal delay ms logic for the Blackjack script.
 local function effective_reveal_delay_ms()
   local v = tonumber(MBJ.draw.reveal_delay_ms) or 1000
   if v < 100 then v = 100 end
@@ -337,11 +452,15 @@ local function effective_reveal_delay_ms()
   return MBJ.draw.reveal_delay_ms
 end
 
+-- Function: enqueue_draw
+-- Purpose: Handles enqueue draw logic for the Blackjack script.
 local function enqueue_draw(on_card)
   if on_card == nil then return end
   table.insert(MBJ.draw.pending, on_card)
 end
 
+-- Function: process_pending_draws
+-- Purpose: Processes pending draws updates for the current game state.
 local function process_pending_draws()
   local d = MBJ.draw
   if d == nil then return end
@@ -419,6 +538,8 @@ local function process_pending_draws()
   end
 end
 
+-- Function: settle_results
+-- Purpose: Settles results outcomes and applies payouts/state changes.
 local function settle_results()
   local dealer_total = hand_total(MBJ.dealer.cards)
   local dealer_natural = (#MBJ.dealer.cards == 2 and dealer_total == 21)
@@ -482,6 +603,8 @@ local function settle_results()
   MBJ.info = "Resolved. Dealer total " .. tostring(dealer_total)
 end
 
+-- Function: start_round
+-- Purpose: Starts round for the current game flow.
 local function start_round()
   flush_chat() -- Empties old dice rolls from previous tests/games
   
@@ -539,6 +662,8 @@ local function start_round()
   announce("start", { total = #MBJ.order })
 end
 
+-- Function: draw_for_active
+-- Purpose: Handles draw for active logic for the Blackjack script.
 local function draw_for_active(kind)
   next_active_hand()
   local name = active_player_name()
@@ -591,6 +716,8 @@ local function draw_for_active(kind)
   end)
 end
 
+-- Function: do_stand
+-- Purpose: Handles do stand logic for the Blackjack script.
 local function do_stand()
   next_active_hand()
   local name = active_player_name()
@@ -619,6 +746,8 @@ local function do_stand()
   end
 end
 
+-- Function: do_double
+-- Purpose: Handles do double logic for the Blackjack script.
 local function do_double()
   next_active_hand()
   local name = active_player_name()
@@ -665,6 +794,8 @@ local function do_double()
   end)
 end
 
+-- Function: do_split
+-- Purpose: Handles do split logic for the Blackjack script.
 local function do_split()
   next_active_hand()
   local name = active_player_name()
@@ -715,6 +846,8 @@ local function do_split()
   MBJ.info = "Split complete. Use /casino deal or /casino hit for " .. label_for(name, p, p.hand_index) .. "."
 end
 
+-- Function: dealer_draw_one
+-- Purpose: Handles dealer draw one logic for the Blackjack script.
 local function dealer_draw_one()
   if not MBJ.round_active then
     MBJ.info = "No active round. Use /casino bjstart first."
@@ -743,6 +876,8 @@ local function dealer_draw_one()
   })
 end
 
+-- Function: undo_last_action
+-- Purpose: Handles undo last action logic for the Blackjack script.
 local function undo_last_action()
   if #MBJ.action_history == 0 then
     MBJ.info = "No actions to undo."
@@ -778,6 +913,8 @@ local function undo_last_action()
   end
 end
 
+-- Function: on_command
+-- Purpose: Routes script commands and executes command-specific game actions.
 function on_command(cmd, ...)
   local command = string.lower(tostring(cmd or ""))
 
@@ -868,6 +1005,8 @@ function on_command(cmd, ...)
   return "unknown"
 end
 
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
 function draw_config_ui()
   ui_text_colored("Macro Blackjack Config", 0.8, 0.95, 0.8, 1.0)
   ui_separator()
@@ -934,6 +1073,14 @@ function draw_config_ui()
   if ui_button("Import From Blob##mbj_btn_imp") then
     MBJ.import_status = import_blob(MBJ.share_blob)
   end
+  ui_same_line()
+  if ui_button("Save Config##mbj_btn_save_file") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##mbj_btn_load_file") then
+    load_config_file()
+  end
   
   if MBJ.import_status and MBJ.import_status ~= "" then
     if string.find(MBJ.import_status, "SUCCESS") then
@@ -976,6 +1123,8 @@ function draw_config_ui()
   ui_text("- Pipe-variant example: Dealer draws <card>|Dealer flips <card>|House draws <card>")
 end
 
+-- Function: draw_cards
+-- Purpose: Handles draw cards logic for the Blackjack script.
 local function draw_cards(values, idPrefix)
   if values == nil or #values == 0 then
     ui_text("(none)")
@@ -988,6 +1137,8 @@ local function draw_cards(values, idPrefix)
   end
 end
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   process_pending_draws()
 
@@ -1033,29 +1184,28 @@ function draw_ui()
   ui_text_colored("Players", 0.9, 0.95, 1.0, 1.0)
   if #MBJ.order == 0 then
     ui_text("(no active round)")
-    return
-  end
-
-  for i = 1, #MBJ.order do
-    local name = MBJ.order[i]
-    local p = MBJ.players[name]
-    if p ~= nil then
-      ui_text(name .. " | base wager " .. tostring(p.wager))
-      for hi = 1, #p.hands do
-        local h = p.hands[hi]
-        local state = h.bust and "BUST" or (h.finished and "DONE" or "ACT")
-        if h.doubled then state = state .. " DOUBLE" end
-        if h.from_split then state = state .. " SPLIT" end
-        ui_text("  Hand " .. tostring(hi) .. " | wager " .. tostring(h.wager) .. " | total " .. tostring(hand_total(h.cards)) .. " | " .. state)
-        draw_cards(h.cards, "mbj_" .. name .. "_h" .. tostring(hi))
+  else
+    for i = 1, #MBJ.order do
+      local name = MBJ.order[i]
+      local p = MBJ.players[name]
+      if p ~= nil then
+        ui_text(name .. " | base wager " .. tostring(p.wager))
+        for hi = 1, #p.hands do
+          local h = p.hands[hi]
+          local state = h.bust and "BUST" or (h.finished and "DONE" or "ACT")
+          if h.doubled then state = state .. " DOUBLE" end
+          if h.from_split then state = state .. " SPLIT" end
+          ui_text("  Hand " .. tostring(hi) .. " | wager " .. tostring(h.wager) .. " | total " .. tostring(hand_total(h.cards)) .. " | " .. state)
+          draw_cards(h.cards, "mbj_" .. name .. "_h" .. tostring(hi))
+        end
       end
+      ui_separator()
     end
-    ui_separator()
   end
 
   -- Help section moved to bottom
   if ui_collapsing_header ~= nil then
-    MBJ.show_help = ui_collapsing_header("Macro Blackjack Help##mbj_help_section")
+    MBJ.show_help = ui_collapsing_header("Blackjack Help##mbj_help_section")
   end
 
   if MBJ.show_help == true then

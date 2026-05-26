@@ -42,7 +42,10 @@ if DERBY == nil then
       winner = "WINNER: Horse <horse> crossed the finish line!",
       payout = "PAYOUT: <player> wins <payout> chips!",
       house_rake = "HOUSE: Collected <rake> chips (10% rake).",
-    }
+    },
+
+    show_help = true,
+    config_status = "Derby config not loaded yet.",
   }
 end
 
@@ -50,11 +53,15 @@ end
 -- Helpers
 -- ============================================================================
 
+-- Function: table_announce
+-- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(msg)
   local channel = (default_chat_channel ~= nil) and default_chat_channel() or "party"
   if chat_send ~= nil then chat_send(channel, msg) end
 end
 
+-- Function: announce
+-- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local template = DERBY.chat_templates[key]
   if not template then return end
@@ -73,10 +80,108 @@ local function announce(key, ctx)
   table_announce(msg)
 end
 
+-- Function: config_file_name
+-- Purpose: Handles config file name logic for the Horse Racing (Derby) script.
+local function config_file_name()
+  return "Horse Racing (Derby).config.json"
+end
+
+-- Function: echo_notice
+-- Purpose: Handles echo notice logic for the Horse Racing (Derby) script.
+local function echo_notice(msg)
+  local text = tostring(msg or "")
+  if text == "" then return end
+  if chat_send ~= nil then
+    chat_send("echo", text)
+  elseif dealer_party ~= nil then
+    dealer_party(text)
+  end
+end
+
+-- Function: export_config_blob
+-- Purpose: Handles export config blob logic for the Horse Racing (Derby) script.
+local function export_config_blob()
+  return "return {"
+    .. "rake_percent=" .. tostring(tonumber(DERBY.config.rake_percent) or 0.10) .. ","
+    .. "scratches_fixed=" .. tostring(math.floor(tonumber(DERBY.config.scratches_fixed) or 4)) .. ","
+    .. "draw_delay_ms=" .. tostring(math.floor(tonumber(DERBY.draw.delay_ms) or 1000)) .. ","
+    .. "draw_timeout_ms=" .. tostring(math.floor(tonumber(DERBY.draw.timeout_ms) or 3000)) .. ","
+    .. "show_help=" .. tostring(DERBY.show_help == true)
+    .. "}"
+end
+
+-- Function: apply_config_table
+-- Purpose: Handles apply config table logic for the Horse Racing (Derby) script.
+local function apply_config_table(data)
+  if type(data) ~= "table" then return false end
+  if data.rake_percent ~= nil then DERBY.config.rake_percent = tonumber(data.rake_percent) or DERBY.config.rake_percent end
+  if data.scratches_fixed ~= nil then DERBY.config.scratches_fixed = tonumber(data.scratches_fixed) or DERBY.config.scratches_fixed end
+  if data.draw_delay_ms ~= nil then DERBY.draw.delay_ms = tonumber(data.draw_delay_ms) or DERBY.draw.delay_ms end
+  if data.draw_timeout_ms ~= nil then DERBY.draw.timeout_ms = tonumber(data.draw_timeout_ms) or DERBY.draw.timeout_ms end
+  if data.show_help ~= nil then DERBY.show_help = (data.show_help == true) end
+  return true
+end
+
+-- Function: save_config_file
+-- Purpose: Saves config file data from runtime state.
+local function save_config_file()
+  if script_write_text == nil then
+    DERBY.config_status = "Derby config save failed (host file API unavailable)."
+    echo_notice(DERBY.config_status)
+    return false
+  end
+  local ok = script_write_text(config_file_name(), export_config_blob()) == true
+  if ok then
+    DERBY.config_status = "Derby config saved."
+  else
+    DERBY.config_status = "Derby config save failed."
+  end
+  echo_notice(DERBY.config_status)
+  return ok
+end
+
+-- Function: load_config_file
+-- Purpose: Loads config file data into runtime state.
+local function load_config_file()
+  if script_read_text == nil then
+    DERBY.config_status = "Derby config load skipped (host file API unavailable)."
+    return false
+  end
+  local raw = script_read_text(config_file_name())
+  if raw == nil or raw == "" then
+    DERBY.config_status = "Derby config file not found."
+    return false
+  end
+  local loader = loadstring or load
+  local fn, err = loader(tostring(raw))
+  if not fn then
+    DERBY.config_status = "Derby config syntax error: " .. tostring(err)
+    return false
+  end
+  local ok, data = pcall(fn)
+  if not ok then
+    DERBY.config_status = "Derby config runtime error: " .. tostring(data)
+    return false
+  end
+  if not apply_config_table(data) then
+    DERBY.config_status = "Derby config invalid payload."
+    return false
+  end
+  DERBY.config_status = "Derby config loaded."
+  return true
+end
+
+if DERBY._config_loaded ~= true then
+  load_config_file()
+  DERBY._config_loaded = true
+end
+
 -- ============================================================================
 -- Scaling & Track
 -- ============================================================================
 
+-- Function: setup_race_scaling
+-- Purpose: Handles setup race scaling logic for the Horse Racing (Derby) script.
 local function setup_race_scaling()
   DERBY.roster = {}
   local p_count = (dealer_player_count ~= nil) and dealer_player_count() or 0
@@ -90,6 +195,37 @@ local function setup_race_scaling()
       DERBY.players[name] = { wager = tonumber(wager) or 20 }
     end
   end
+
+-- Function: draw_config_ui
+-- Purpose: Renders the configuration panel where the dealer edits script settings.
+function draw_config_ui()
+  ui_text_colored("Derby Config", 0.8, 0.95, 0.8, 1.0)
+  ui_separator()
+  ui_text("Config status: " .. tostring(DERBY.config_status or ""))
+
+  local rake = tonumber(DERBY.config.rake_percent) or 0.10
+  local rakePct = ui_input_int("House rake percent##derby_rake", math.floor(rake * 100 + 0.5))
+  if rakePct < 0 then rakePct = 0 end
+  if rakePct > 50 then rakePct = 50 end
+  DERBY.config.rake_percent = rakePct / 100
+
+  local scratches = ui_input_int("Fixed scratches##derby_scratches", tonumber(DERBY.config.scratches_fixed) or 4)
+  if scratches < 0 then scratches = 0 end
+  if scratches > 8 then scratches = 8 end
+  DERBY.config.scratches_fixed = scratches
+
+  DERBY.draw.delay_ms = math.max(0, ui_input_int("Dice delay (ms)##derby_draw_delay", tonumber(DERBY.draw.delay_ms) or 1000))
+  DERBY.draw.timeout_ms = math.max(500, ui_input_int("Dice timeout (ms)##derby_draw_timeout", tonumber(DERBY.draw.timeout_ms) or 3000))
+
+  ui_separator()
+  if ui_button("Save Config##derby_cfg_save") then
+    save_config_file()
+  end
+  ui_same_line()
+  if ui_button("Load Config##derby_cfg_load") then
+    load_config_file()
+  end
+end
 
   if #DERBY.roster < 1 then return false end
 
@@ -111,6 +247,8 @@ local function setup_race_scaling()
   return true
 end
 
+-- Function: assign_horses
+-- Purpose: Handles assign horses logic for the Horse Racing (Derby) script.
 local function assign_horses()
   local live = {}
   for i = 1, DERBY.total_horses do if not DERBY.horses[i].scratched then table.insert(live, i) end end
@@ -136,6 +274,8 @@ end
 -- Resolution & Payout
 -- ============================================================================
 
+-- Function: resolve_round
+-- Purpose: Handles resolve round logic for the Horse Racing (Derby) script.
 local function resolve_round()
   for _, name in ipairs(DERBY.roster) do
     local val = DERBY.round_rolls[name]
@@ -186,6 +326,8 @@ end
 -- Logic & Processing
 -- ============================================================================
 
+-- Function: process_logic
+-- Purpose: Processes logic updates for the current game state.
 function process_logic()
   local now = (time_ms ~= nil) and time_ms() or 0
   local d = DERBY.draw
@@ -229,6 +371,22 @@ function process_logic()
             end
           end
         end
+
+  ui_separator()
+  if ui_collapsing_header ~= nil then
+    DERBY.show_help = ui_collapsing_header("Derby Help##derby_help")
+  end
+  if DERBY.show_help == true then
+    ui_text_colored("Flow", 0.9, 0.95, 1.0, 1.0)
+    ui_text("1) Start Setup -> dealer scratches horses and assigns live horses.")
+    ui_text("2) Start Round -> players roll /dice <dice-size> once each.")
+    ui_text("3) Horses move by rolled horse number; scratched rolls are penalties.")
+    ui_text("4) First horse(s) to finish settle pot, rake, and payouts.")
+    ui_separator()
+    ui_text_colored("Tips", 0.9, 0.95, 1.0, 1.0)
+    ui_text("Use Dealer Roll beside WAITING players to force an AFK roll.")
+    ui_text("Track length scales by roster size; wagers are pulled at setup.")
+  end
       end
     end
   end
@@ -238,6 +396,8 @@ end
 -- UI Rendering
 -- ============================================================================
 
+-- Function: draw_ui
+-- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   process_logic()
 
@@ -255,6 +415,8 @@ function draw_ui()
       DERBY.phase = "scratching"
       announce("race_init")
       
+      -- Function: do_scratch
+      -- Purpose: Handles do scratch logic for the Horse Racing (Derby) script.
       local function do_scratch()
         if DERBY.scratch_count >= DERBY.config.scratches_fixed then
           assign_horses()
