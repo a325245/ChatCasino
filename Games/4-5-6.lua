@@ -1,12 +1,18 @@
+-------------------------------------------------------------------
+-- 4-5-6 v1.0
+-- Players queue up and try to clear 3 rounds of /party random 12
+-- round 1 higher than 4, 
+-- round 2 higher than 5, 
+-- round 3 higher than 6. 
+-------------------------------------------------------------------
+
 if R456 == nil then
   R456 = {
-    phase = "idle", -- idle | waiting_rolls | awaiting_comment
+    phase = "idle", -- idle | waiting_rolls
     info = "Queue a player to begin 456.",
 
     queue = {},
     active_run = nil, -- { player=<name>, bet=<wager>, rolls={}, current_roll=1 }
-    pending_step_result = nil,
-    dealer_comment_draft = "",
 
     pending_chat = {},
     next_chat_at = 0,
@@ -461,6 +467,7 @@ local function settle_failure(player, bet, roundIndex, need, roll)
   announce("fail_step", { player = player, round = roundIndex, need = need, roll = roll, bet = bet, bank = bank })
   announce("lose", { player = player, round = roundIndex, need = need, roll = roll, bet = bet, bank = bank })
   record_rtp_result(player, bet, 0, "lose", rollsText)
+  
   R456.active_run = nil
   R456.phase = "idle"
   R456.info = player .. " failed step " .. tostring(roundIndex) .. "."
@@ -477,54 +484,15 @@ local function settle_success(player, bet, rolls)
   local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(player)) or 0) or 0
   announce("win", { player = player, payout = payout, bet = bet, bank = bank, result = table.concat(rolls, ",") })
   record_rtp_result(player, bet, payout, "win", table.concat(rolls or {}, ","))
+  
   R456.active_run = nil
   R456.phase = "idle"
   R456.info = player .. " cleared all 3 rolls."
   R456.next_turn_at = ((time_ms ~= nil) and tonumber(time_ms()) or 0) + effective_delay_ms()
 end
 
--- Function: submit_dealer_comment_if_any
--- Purpose: Handles submit dealer comment if any logic for the 456 script.
-local function submit_dealer_comment_if_any()
-  local text = tostring(R456.dealer_comment_draft or "")
-  text = string.gsub(text, "^%s+", "")
-  text = string.gsub(text, "%s+$", "")
-  if text ~= "" then
-    table_announce("Dealer: " .. text)
-  end
-  R456.dealer_comment_draft = ""
-end
-
--- Function: resolve_pending_step_result
--- Purpose: Handles resolve pending step result logic for the 456 script.
-local function resolve_pending_step_result()
-  local p = R456.pending_step_result
-  if p == nil then return end
-
-  submit_dealer_comment_if_any()
-  R456.pending_step_result = nil
-
-  if p.passed == true then
-    if p.step >= R456.required_rolls then
-      settle_success(p.player, p.bet, p.rolls)
-      return
-    end
-
-    local run = R456.active_run
-    if run == nil then return end
-    run.current_roll = p.step + 1
-    local nextNeed = tonumber(R456.minimums[run.current_roll]) or 0
-    announce("prompt", { player = run.player, round = run.current_roll, need = nextNeed, bet = run.bet })
-    R456.phase = "waiting_rolls"
-    R456.info = run.player .. " passed step " .. tostring(p.step) .. "."
-    return
-  end
-
-  settle_failure(p.player, p.bet, p.step, p.need, p.roll)
-end
-
 -- Function: handle_roll
--- Purpose: Handles handle roll logic for the 456 script.
+-- Purpose: Evaluates the player's roll directly.
 local function handle_roll(roll)
   if R456.phase ~= "waiting_rolls" or R456.active_run == nil then return end
 
@@ -536,32 +504,19 @@ local function handle_roll(roll)
 
   if roll > need then
     announce("pass_step", { player = run.player, round = step, need = need, roll = roll, bet = run.bet })
-    R456.pending_step_result = {
-      player = run.player,
-      bet = run.bet,
-      rolls = run.rolls,
-      step = step,
-      need = need,
-      roll = roll,
-      passed = true,
-    }
-    R456.phase = "awaiting_comment"
-    R456.info = run.player .. " passed step " .. tostring(step) .. ". Dealer comment?"
+    
+    if step >= R456.required_rolls then
+      settle_success(run.player, run.bet, run.rolls)
+    else
+      run.current_roll = step + 1
+      local nextNeed = tonumber(R456.minimums[run.current_roll]) or 0
+      announce("prompt", { player = run.player, round = run.current_roll, need = nextNeed, bet = run.bet })
+      R456.info = run.player .. " passed step " .. tostring(step) .. ". Waiting for step " .. tostring(run.current_roll) .. "."
+    end
     return
   end
 
-  announce("fail_step", { player = run.player, round = step, need = need, roll = roll, bet = run.bet })
-  R456.pending_step_result = {
-    player = run.player,
-    bet = run.bet,
-    rolls = run.rolls,
-    step = step,
-    need = need,
-    roll = roll,
-    passed = false,
-  }
-  R456.phase = "awaiting_comment"
-  R456.info = run.player .. " failed step " .. tostring(step) .. ". Dealer comment?"
+  settle_failure(run.player, run.bet, step, need, roll)
 end
 
 -- Function: start_next_turn
@@ -739,27 +694,6 @@ function draw_ui()
     end
   end
 
-  if R456.phase == "awaiting_comment" and R456.pending_step_result ~= nil then
-    local p = R456.pending_step_result
-    ui_separator()
-    ui_text_colored("Dealer Comment", 1.0, 0.9, 0.7, 1.0)
-    ui_text(tostring(p.player) .. " | Step " .. tostring(p.step) .. "/3 | Roll " .. tostring(p.roll))
-    if p.passed == true then
-      ui_text("Result: PASS")
-    else
-      ui_text("Result: FAIL")
-    end
-    R456.dealer_comment_draft = ui_input_text("Comment##R456_dealer_comment", tostring(R456.dealer_comment_draft or ""), 512)
-    if ui_button("Send Comment + Continue##R456_comment_continue") then
-      resolve_pending_step_result()
-    end
-    ui_same_line()
-    if ui_button("Continue Without Comment##R456_comment_skip") then
-      R456.dealer_comment_draft = ""
-      resolve_pending_step_result()
-    end
-  end
-
   ui_separator()
   ui_text_colored("Dealer Queue", 0.9, 0.95, 1.0, 1.0)
 
@@ -832,4 +766,3 @@ function draw_ui()
 end
 
 return R456
-
