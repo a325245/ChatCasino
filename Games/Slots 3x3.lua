@@ -1,5 +1,5 @@
 -- ============================================================================
--- 3x3 Slots 1.0
+-- Slots 3x3 1.0
 -- players roll 3 randoms
 -- each random maps to a strip symbol index (1-10)
 -- three strips of 3 symbols are printed to chat as the "grid"
