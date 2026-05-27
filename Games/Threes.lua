@@ -30,6 +30,7 @@ if TH == nil then
     dealer_score = nil,
     dealer_dice = {},
     dealer_ai = nil,
+    dealer_ai_enabled = true,
 
     dice_channel = "party",
     dealer_rolls_for_players = true,
@@ -83,6 +84,7 @@ local function export_config_blob()
     .. "game_mode=[=[" .. tostring(effective_game_mode()) .. "]=],"
     .. "pot_seed=" .. tostring(math.floor(tonumber(TH.pot_seed) or 100)) .. ","
     .. "show_help=" .. tostring(TH.show_help == true) .. ","
+    .. "dealer_ai_enabled=" .. tostring(TH.dealer_ai_enabled ~= false) .. ","
     .. "chat_templates={"
     .. "round_start=[=[" .. tostring(t.round_start or "") .. "]=],"
     .. "turn_start=[=[" .. tostring(t.turn_start or "") .. "]=],"
@@ -107,6 +109,7 @@ local function apply_config_table(data)
   if data.game_mode ~= nil then TH.game_mode = tostring(data.game_mode or TH.game_mode) end
   if data.pot_seed ~= nil then TH.pot_seed = tonumber(data.pot_seed) or TH.pot_seed end
   if data.show_help ~= nil then TH.show_help = (data.show_help == true) end
+  if data.dealer_ai_enabled ~= nil then TH.dealer_ai_enabled = (data.dealer_ai_enabled == true) end
 
   if type(data.chat_templates) == "table" then
     local t = TH.chat_templates or {}
@@ -356,7 +359,13 @@ end
 -- Function: active_player_name
 -- Purpose: Handles active player name logic for the Threes script.
 local function active_player_name()
-  if TH.active_index < 1 or TH.active_index > #TH.order then return "" end
+  if TH.active_index < 1 then return "" end
+  if TH.active_index > #TH.order then
+    if TH.active_index == #TH.order + 1 and TH.dealer_ai_enabled == false and (effective_game_mode() == "pot" or TH.play_vs_dealer) then
+      return "Dealer"
+    end
+    return ""
+  end
   return TH.order[TH.active_index] or ""
 end
 
@@ -640,7 +649,7 @@ end
 -- Purpose: Processes dealer ai turn updates for the current game state.
 local function process_dealer_ai_turn()
   local ai = TH.dealer_ai
-  if TH.phase ~= "dealer_turn" or ai == nil then return end
+  if TH.dealer_ai_enabled == false or TH.phase ~= "dealer_turn" or ai == nil then return end
 
   -- Function: ai_unheld_count
   -- Purpose: Handles ai unheld count logic for the Threes script.
@@ -850,14 +859,18 @@ local function finish_round()
   local mode = effective_game_mode()
 
   if mode == "pot" then
-    TH.results = {}
-    start_dealer_ai_turn()
+    if TH.dealer_ai_enabled ~= false then
+      TH.results = {}
+      start_dealer_ai_turn()
+    end
     return
   end
 
   if TH.play_vs_dealer then
-    TH.results = {}
-    start_dealer_ai_turn()
+    if TH.dealer_ai_enabled ~= false then
+      TH.results = {}
+      start_dealer_ai_turn()
+    end
     return
   end
 
@@ -888,11 +901,32 @@ local function finish_turn()
   if player == "" then return end
 
   local score = turn_score()
+
+  if player == "Dealer" then
+    TH.dealer_score = score
+    announce("turn_score", { player = "Dealer", total = score })
+    if effective_game_mode() == "pot" then
+      finalize_pot_round()
+    else
+      finalize_vs_dealer_round()
+    end
+    return
+  end
+
   TH.scores[player] = score
   announce("turn_score", { player = player, total = score })
 
   TH.active_index = TH.active_index + 1
   if TH.active_index > #TH.order then
+    if TH.dealer_ai_enabled == false and (effective_game_mode() == "pot" or TH.play_vs_dealer) then
+      TH.results = {}
+      reset_turn_dice()
+      TH.phase = "turn_active"
+      TH.info = "Dealer to roll."
+      announce("turn_start", { player = "Dealer" })
+      return
+    end
+
     finish_round()
     return
   end
@@ -1247,26 +1281,30 @@ function draw_config_ui()
 
   TH.dealer_rolls_for_players = true
   ui_text(" ")
+  
+  local ai_status = (TH.dealer_ai_enabled ~= false) and "ON" or "OFF"
+  if ui_button("Dealer AI (Auto-Hold): " .. ai_status .. "##th_dealer_ai") then
+    TH.dealer_ai_enabled = not (TH.dealer_ai_enabled ~= false)
+  end
+
   TH.roll_delay_ms = math.max(100, ui_input_int("Roll pacing (ms)##th_roll_delay", effective_roll_delay_ms()))
   effective_roll_delay_ms()
   ui_text(" ")
-  ui_text("Game mode: " .. (effective_game_mode() == "pot" and "Pot" or "Player vs Dealer"))
-  if ui_button("Mode ▼##th_mode_dropdown") then
-    TH.show_mode_dropdown = not (TH.show_mode_dropdown == true)
-  end
-  if TH.show_mode_dropdown == true then
-    if ui_button("Player vs Dealer##th_mode_vs") then
+  -- Game Mode Toggle Button
+  local current_mode = effective_game_mode()
+  local mode_display = (current_mode == "pot") and "Pot" or "Player vs Dealer"
+  
+  if ui_button("Game Mode: " .. mode_display .. " (Click to Swap)##th_mode_toggle") then
+    if current_mode == "pot" then
       TH.game_mode = "vs_dealer"
       TH.play_vs_dealer = true
-      TH.show_mode_dropdown = false
-    end
-    if ui_button("Pot##th_mode_pot") then
+    else
       TH.game_mode = "pot"
       TH.play_vs_dealer = false
-      TH.show_mode_dropdown = false
     end
   end
   
+  -- Mode Descriptions & Conditional Inputs
   if effective_game_mode() == "pot" then
     TH.pot_seed = math.max(1, ui_input_int("Pot seed / expected ante##th_pot_seed", tonumber(TH.pot_seed) or 100))
     ui_text("Pot mode: dealer is also player; lowest score wins/splits pot.")
