@@ -1,3 +1,14 @@
+------------------------------------------------------------------------
+-- Threes 1.01: added config toggle to allow dealer to play as a player 
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+-- Threes (also known as "Threes Away"
+-- Players roll 5 dice and try to make the lowest score
+-- they must hold at least 1 die per round for a max 5 rounds
+-- 3's are worth 0, everything else worth face value
+------------------------------------------------------------------------
+
 if TH == nil then
   TH = {
     phase = "idle",
