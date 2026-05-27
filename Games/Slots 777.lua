@@ -1,3 +1,11 @@
+----------------------------------------
+-- Slots 777 1.0
+-- Players wager and roll a /dice party
+-- 565 or higher, 2x win
+-- 950 or higher, 3x win
+-- 999 4x win, 777 5x win
+----------------------------------------
+
 if S777 == nil then
   -- Persistent script state table.
   -- This survives frame-to-frame while the script stays loaded.
@@ -41,7 +49,13 @@ if S777 == nil then
       lose = "<player> rolled <roll>. No hit. Lost <bet>. Bank <bank>.",
       skipped = "<player> removed from queue (invalid wager or insufficient bank).",
       booted = "<player> was booted from Slots777 queue/turn.",
-    }
+    },
+    
+    -- RTP Tracking
+    rtp_rounds = 0,
+    rtp_wagered = 0,
+    rtp_paid = 0,
+    rtp_last_round_id = 0,
   }
 end
 
@@ -217,6 +231,72 @@ if S777._config_loaded ~= true then
   load_config()
   S777._config_loaded = true
 end
+
+-- ============================================================================
+-- RTP LOGGING
+-- ============================================================================
+
+-- Function: rtp_log_file_name
+-- Purpose: Returns the CSV log filename used for Slots777 settlement output.
+local function rtp_log_file_name()
+  return "Slots777.rtp.csv"
+end
+
+-- Function: csv_escape
+-- Purpose: Escapes CSV field values for safe append operations.
+local function csv_escape(v)
+  local s = tostring(v or "")
+  s = string.gsub(s, '"', '""')
+  return '"' .. s .. '"'
+end
+
+-- Function: append_rtp_log_row
+-- Purpose: Appends one settled Slots777 player result to RTP CSV.
+local function append_rtp_log_row(row)
+  if script_read_text == nil or script_write_text == nil then return false end
+  if type(row) ~= "table" then return false end
+
+  local header = "timestamp_ms,round_id,player,wager,payout,net,result,roll,multiplier\n"
+  local line = table.concat({
+    tostring(math.floor(tonumber(row.timestamp_ms) or 0)),
+    tostring(math.floor(tonumber(row.round_id) or 0)),
+    csv_escape(row.player),
+    tostring(math.floor(tonumber(row.wager) or 0)),
+    tostring(math.floor(tonumber(row.payout) or 0)),
+    tostring(math.floor(tonumber(row.net) or 0)),
+    csv_escape(row.result),
+    tostring(math.floor(tonumber(row.roll) or 0)),
+    tostring(math.floor(tonumber(row.multiplier) or 0))
+  }, ",") .. "\n"
+
+  local existing = script_read_text(rtp_log_file_name()) or ""
+  if existing == "" then
+    return script_write_text(rtp_log_file_name(), header .. line) == true
+  end
+  return script_write_text(rtp_log_file_name(), existing .. line) == true
+end
+
+-- Function: record_rtp_result
+-- Purpose: Updates RTP counters and writes one CSV row for a settled player result.
+local function record_rtp_result(player, wager, payout, result, roll, multiplier)
+  local w = math.floor(math.max(0, tonumber(wager) or 0))
+  local p = math.floor(math.max(0, tonumber(payout) or 0))
+  S777.rtp_wagered = math.floor((tonumber(S777.rtp_wagered) or 0) + w)
+  S777.rtp_paid = math.floor((tonumber(S777.rtp_paid) or 0) + p)
+
+  append_rtp_log_row({
+    timestamp_ms = (time_ms ~= nil) and (tonumber(time_ms()) or 0) or 0,
+    round_id = tonumber(S777.rtp_last_round_id) or 0,
+    player = tostring(player or ""),
+    wager = w,
+    payout = p,
+    net = p - w,
+    result = tostring(result or ""),
+    roll = tonumber(roll) or 0,
+    multiplier = tonumber(multiplier) or 0
+  })
+end
+
 
 -- Drain any already-buffered chat packets.
 -- This is called when a new active spinner is selected so old/stale /dice lines
@@ -430,6 +510,9 @@ end
 -- Function: settle_spin
 -- Purpose: Settles spin outcomes and applies payouts/state changes.
 local function settle_spin(player, bet, roll)
+  S777.rtp_last_round_id = (tonumber(S777.rtp_last_round_id) or 0) + 1
+  S777.rtp_rounds = (tonumber(S777.rtp_rounds) or 0) + 1
+
   local mult = calc_multiplier(roll)
   local payout = 0
 
@@ -440,11 +523,13 @@ local function settle_spin(player, bet, roll)
     local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(player)) or 0) or 0
     announce("win", { player = player, bet = bet, roll = roll, mult = mult, payout = payout, bank = bank })
     S777.info = player .. " hit x" .. tostring(mult) .. " on " .. tostring(roll) .. "."
+    record_rtp_result(player, bet, payout, "wins", roll, mult)
   else
     -- Loss path: no payout (bet already deducted), only announce outcome.
     local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(player)) or 0) or 0
     announce("lose", { player = player, bet = bet, roll = roll, bank = bank })
     S777.info = player .. " missed on " .. tostring(roll) .. "."
+    record_rtp_result(player, bet, 0, "loses", roll, 0)
   end
 
   S777.active_spin = nil
@@ -471,6 +556,7 @@ local function start_next_spin()
   -- Re-validate queued payload in case roster/bank changed while waiting.
   if player == "" or bet <= 0 or (dealer_is_eligible ~= nil and not dealer_is_eligible(player)) then
     announce("skipped", { player = player })
+    record_rtp_result(player, bet, 0, "skipped", 0, 0)
     S777.next_spin_at = now + effective_pacing_delay_ms()
     start_next_spin()
     return
@@ -479,6 +565,7 @@ local function start_next_spin()
   local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(player)) or 0) or 0
   if bank < bet then
     announce("skipped", { player = player })
+    record_rtp_result(player, bet, 0, "skipped", 0, 0)
     S777.info = player .. " skipped (insufficient bank)."
     S777.next_spin_at = now + effective_pacing_delay_ms()
     start_next_spin()
@@ -743,7 +830,7 @@ function draw_ui()
   if S777.show_help == true then
     ui_text_colored("Flow", 0.9, 0.95, 1.0, 1.0)
     ui_text("1) Dealer clicks Queue next to a player.")
-    ui_text("2) Player rolls /dice party (d1000).")
+    ui_text("2) Player rolls /dice party")
     ui_text("3) Bet is withdrawn at spin start; payout is added on win.")
     ui_text("4) Use /casino s777boot [name] to remove stalled players from active/queue.")
     ui_separator()
@@ -754,6 +841,19 @@ function draw_ui()
     ui_text("777: x5 jackpot")
     ui_text("Below 565: loss")
   end
+
+  ui_separator()
+  local wagered = tonumber(S777.rtp_wagered) or 0
+  local paid = tonumber(S777.rtp_paid) or 0
+  local rounds = tonumber(S777.rtp_rounds) or 0
+  local rtp = (wagered > 0) and ((paid / wagered) * 100.0) or 0
+  ui_text(string.format(
+    "Return To Player: %.2f%% | Rounds: %d | Gil In: %d | Gil Out: %d",
+    rtp,
+    math.floor(rounds),
+    math.floor(wagered),
+    math.floor(paid)
+  ))
 end
 
 -- Return module table for consistency with other scripts.
