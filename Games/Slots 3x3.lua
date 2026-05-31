@@ -1,4 +1,9 @@
+
+
 -- ============================================================================
+-- Slots 3x3 1.1
+-- updates: fixed "0" roll being ignored
+
 -- Slots 3x3 1.0
 -- players roll 3 randoms
 -- each random maps to a strip symbol index (1-10)
@@ -301,7 +306,7 @@ if SLOTS._config_loaded ~= true then
 end
 
 -- ============================================================================
--- GRID OUTPUT LOGIC (RESTORED)
+-- GRID OUTPUT LOGIC 
 -- ============================================================================
 
 -- Function: queue_grid_announce
@@ -402,6 +407,26 @@ local function message_is_from_expected_roller(name, message)
   return false
 end
 
+-- Function: parse_slots_roll
+-- Purpose: Parses a roll from chat, safely supporting 0.
+local function parse_slots_roll(msg)
+  local m = tostring(msg or "")
+  
+  -- Prioritize specific bot strings "Random! X"
+  local n = m:match("[Rr]andom!%s*(%d+)")
+  if n then return tonumber(n) end
+
+  -- Fallback to host API to capture genuine system rolls "rolls a X."
+  if dice_roll_value ~= nil then
+    local val = tonumber(dice_roll_value(m))
+    if val ~= nil and val >= 0 then
+      return val
+    end
+  end
+
+  return nil
+end
+
 -- ============================================================================
 -- CORE MATH & SYMBOL LOGIC
 -- ============================================================================
@@ -454,10 +479,6 @@ local function execute_spin(player_name, lines, bet, rolls)
   local req = 3
   local rows = {}
 
-  -- Direct digit mapping mode:
-  -- roll 986 -> indices 9,8,6
-  -- roll 091 -> indices 10,9,1  (0 maps to strip slot 10)
-  -- roll 7   -> treated as 007 -> indices 10,10,7
   local function roll_to_indices(v)
     local n = math.floor(tonumber(v) or 0)
     if n < 0 then n = 0 end
@@ -526,22 +547,10 @@ local function process_dealer_auto_rolls()
 
     local _, _, _, message = string.match(pkt, "^([^|]*)|([^|]*)|([^|]*)|(.*)$")
     local msg = tostring(message or "")
-    local rolled = (dice_roll_value ~= nil and message ~= nil) and tonumber(dice_roll_value(message) or 0) or 0
-    local upper = (dice_roll_upper ~= nil and message ~= nil) and tonumber(dice_roll_upper(message) or 0) or 0
+    local rolled = parse_slots_roll(msg)
 
-    -- Fallback parse for chat formats like: "Random! 194"
-    if rolled == nil or rolled <= 0 then
-      local n = msg:match("[Rr]andom!%s*(%d+)")
-      if n == nil then
-        for v in msg:gmatch("%d+") do n = v end
-      end
-      rolled = tonumber(n) or 0
-    end
-
-    -- Accept party dice results even if upper parsing varies by client/locale.
-    if rolled >= 1 and rolled <= 1000 and (upper == 1000 or upper == 0 or upper == nil) then
+    if rolled ~= nil and rolled >= 0 and rolled <= 1000 then
       table.insert(SLOTS.active_spin.rolls, rolled)
-      --table_announce("Dealer rolled for " .. tostring(SLOTS.active_spin.player) .. ": " .. tostring(rolled))
       SLOTS.active_spin.auto_roll_inflight = false
 
       if #SLOTS.active_spin.rolls >= (tonumber(SLOTS.active_spin.required_rolls) or 3) then
@@ -602,7 +611,6 @@ local function process_active_spin()
     if s.lines >= 7 then check(grid.t2, grid.m2, grid.b2, "C2") end
     if s.lines >= 8 then check(grid.t3, grid.m3, grid.b3, "C3") end
     
-    -- RESTORED: Handing off to the queue to print the grid to chat
     queue_grid_announce(grid, {
       player=s.player,
       payout=win,
@@ -665,12 +673,8 @@ local function process_chat_inputs()
       end
 
       if SLOTS.phase == "waiting_roll" and not (SLOTS.config and SLOTS.config.dealer_rolls_for_player == true) and message_is_from_expected_roller(name, message) then
-        local r = nil
-        if dice_roll_value ~= nil then r = tonumber(dice_roll_value(message)) end
-        if r == nil or r == 0 then
-          for n in message:gmatch("%d+") do r = tonumber(n) end 
-        end
-        if r and r >= 1 and r <= 1000 then
+        local r = parse_slots_roll(message)
+        if r ~= nil and r >= 0 and r <= 1000 then
           table.insert(SLOTS.active_spin.rolls, r)
           if #SLOTS.active_spin.rolls >= SLOTS.active_spin.required_rolls then
             execute_spin(SLOTS.active_spin.player, SLOTS.active_spin.lines, SLOTS.active_spin.bet, SLOTS.active_spin.rolls)
@@ -709,7 +713,7 @@ end
 -- Purpose: Renders the main game UI and runs the per-frame update flow.
 function draw_ui()
   process_chat_inputs()
-  process_pending_announcements() -- RESTORED: Prints the grid to chat
+  process_pending_announcements() 
   
   if SLOTS.phase == "idle" and SLOTS.pending_grid_lines == nil and #SLOTS.queue > 0 then
     SLOTS.active_spin = table.remove(SLOTS.queue, 1)
