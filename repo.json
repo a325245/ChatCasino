@@ -9,7 +9,7 @@
         "RepoUrl": "https://github.com/a325245/ChatCasino",
         "AcceptsFeedback": false,
         "DalamudApiLevel": 15,
-        "AssemblyVersion": "1.5.4.0",
+        "AssemblyVersion": "1.6.2.0",
         "DownloadLinkInstall": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
         "DownloadLinkUpdate": "https://github.com/a325245/ChatCasino/releases/download/release_1_4/ChatJack1.4.zip",
         "Changelog": "major redo, now a lua engine",
