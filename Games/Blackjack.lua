@@ -5,7 +5,7 @@
 
 -- --- Hardcoded Defaults Fallback ---
 local default_templates = {
-  start = "Macro blackjack round started for <total> players.",
+  start = "Blackjack round started for <total> players.",
   dealer_draw = "Dealer draws <card> (total <total>).",
   dealer_first = "Dealer draws a <card>.",
   player_draw2 = "<player> draws a <card>,",
