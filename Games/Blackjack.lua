@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------
--- Macro Blackjack: Smart Flow Edition
+-- Macro Blackjack: Smart Flow Edition 1.1
 -- Corrected UI Spacing, Standard Cards, Hard 17 Automation, Bank Thread Fix
 ------------------------------------------------------------------------
 
@@ -221,9 +221,13 @@ if MBJ._config_loaded ~= true then
   MBJ._config_loaded = true
 end
 
+-- NEW SAFE FLUSH FUNCTION
 local function flush_chat()
   if type(chat_poll) == "function" then
-    for _ = 1, 50 do if chat_poll() == nil then break end end
+    -- Safely bounded loop (max 200) to clear old entries without locking the thread
+    for _ = 1, 200 do 
+      if chat_poll() == nil then break end 
+    end
   end
 end
 
@@ -371,8 +375,6 @@ end
 -- ==========================================
 -- RESTRICTIONS & VALIDATIONS
 -- ==========================================
--- check_funds is passed as FALSE from the UI rendering thread to prevent ImGui flickering 
--- when polling the host ledger, but TRUE during command execution.
 local function get_double_restriction(name, p, h, check_funds)
   if not MBJ.config.allow_double then return "err_dd_disabled" end
   if p == nil or h == nil then return nil end
@@ -396,8 +398,6 @@ local function get_split_restriction(name, p, h, check_funds)
   local c1 = get_cv(h.cards[1])
   local c2 = get_cv(h.cards[2])
   local sameRank = (c1 == c2)
-  
-  -- True if BOTH cards evaluate mathematically to 10 (10, J, Q, K)
   local bothTenValue = (card_value(c1) == 10 and card_value(c2) == 10)
   
   if not sameRank and not bothTenValue then return "err_split_value" end
@@ -477,6 +477,10 @@ local function process_pending_draws()
 
   if (not d.inflight) and now >= (d.next_ms or 0) then
     local ch = tostring(d.channel or "party")
+    
+    -- Safe buffer clear right before issuing the actual command
+    flush_chat() 
+    
     if type(dice_command) ~= "function" or not dice_command(ch, 13) then
       MBJ.info = "Dice command unavailable (/dice " .. ch .. " 13)."
       MBJ.phase = "idle"
@@ -696,7 +700,6 @@ local function do_double()
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
   
-  -- True is passed here to enforce the actual financial check
   local restriction = get_double_restriction(name, p, h, true)
   if restriction then
     local formatted_err = fmt((MBJ.chat_templates or {})[restriction] or "Double down not allowed.", { bet = tonumber(h.wager) or 0, bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0 })
@@ -728,7 +731,6 @@ local function do_split()
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
   
-  -- True is passed here to enforce the actual financial check
   local restriction = get_split_restriction(name, p, h, true)
   if restriction then
     local formatted_err = fmt((MBJ.chat_templates or {})[restriction] or "Split not allowed.", { total = tonumber(MBJ.config.max_splits) or 0, bet = tonumber(h.wager) or 0, bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0 })
@@ -780,7 +782,6 @@ local function undo_last_action()
         MBJ.players[name].hand_index = hand_idx
         table_announce("(" .. name .. " card removed)")
         
-        -- Reset Phase Index if Dealer had already taken over
         for idx, n in ipairs(MBJ.order) do if n == name then MBJ.active_index = idx end end
         check_turn_state()
       end
@@ -831,7 +832,6 @@ local function draw_visual_cards(cards, x, y)
   if cards == nil or #cards == 0 then return end
   for i = 1, #cards do
     local c = cards[i]
-    -- 25px overlap to stack neatly
     if type(ui_set_cursor) == "function" then ui_set_cursor(x + ((i - 1) * 25), y) end
     if type(ui_card) == "function" then
       if type(c) == "table" then
@@ -932,7 +932,6 @@ local function draw_game_canvas()
           if type(ui_set_cursor) == "function" then ui_set_cursor(cx + canvas_w - 110, current_y + 20) end
           local btn_col = type(ui_button_colored) == "function"
           
-          -- Reverted to standard colored buttons to guarantee host compatibility
           if h.bust and btn_col then ui_button_colored(" BUSTED ##b_"..hi, 0.8, 0.2, 0.2, 1.0)
           elseif is_natural_blackjack(h) and btn_col then ui_button_colored(" BLACKJACK ##b_"..hi, 0.8, 0.6, 0.1, 1.0)
           elseif h.doubled and btn_col then ui_button_colored(" DOUBLED ##b_"..hi, 0.2, 0.6, 0.8, 1.0)
@@ -949,7 +948,6 @@ local function draw_game_canvas()
               safe_same_line()
               if btn_col and ui_button_colored("Stand##mbj_act_stand", 0.7, 0.3, 0.2, 1.0) then on_command("stand") end
               
-              -- Passed FALSE to bypass ImGui bank check threading issues for UI rendering only
               if can_double(name, p, h, false) then
                 safe_same_line()
                 if btn_col and ui_button_colored("Double##mbj_act_dd", 0.8, 0.6, 0.1, 1.0) then on_command("dd") end
@@ -1074,7 +1072,7 @@ function draw_ui()
           local state = h.bust and "BUST" or (h.finished and "DONE" or "WAITING")
           if h.doubled then state = state .. " (x2)" end
           if h.from_split then state = state .. " (Split)" end
-          ui_text("  Hand " .. tostring(hi) .. " -> Total: " .. tostring(hand_total(h.cards)) .. " [" .. state .. "]")
+          ui_text("   Hand " .. tostring(hi) .. " -> Total: " .. tostring(hand_total(h.cards)) .. " [" .. state .. "]")
         end
       end
       safe_separator()
@@ -1086,7 +1084,7 @@ function draw_ui()
   local rounds = tonumber(MBJ.rtp_rounds) or 0
   local rtp = (wagered > 0) and ((paid / wagered) * 100.0) or 0
   if type(ui_text_colored) == "function" then
-    ui_text_colored(string.format("� RTP: %.2f%% | Rounds: %d | Gil In: %d | Gil Out: %d", rtp, rounds, wagered, paid), 0.6, 0.8, 1.0, 1.0)
+    ui_text_colored(string.format("♣ RTP: %.2f%% | Rounds: %d | Gil In: %d | Gil Out: %d", rtp, rounds, wagered, paid), 0.6, 0.8, 1.0, 1.0)
   end
 
   if type(ui_collapsing_header) == "function" then
