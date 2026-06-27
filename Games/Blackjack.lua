@@ -1,3 +1,8 @@
+------------------------------------------------------------------------
+-- Macro Blackjack: Smart Flow Edition
+-- Corrected UI Spacing, Standard Cards, Hard 17 Automation, Bank Thread Fix
+------------------------------------------------------------------------
+
 -- --- Hardcoded Defaults Fallback ---
 local default_templates = {
   start = "Macro blackjack round started for <total> players.",
@@ -38,9 +43,11 @@ if MBJ == nil then
     dealer = { cards = {} },
     round_active = false,
     action_history = {},
+    rtp_rounds = 0,
+    rtp_wagered = 0,
+    rtp_paid = 0,
+    rtp_last_round_id = 0,
     config = {
-      min_bet = 10,
-      max_bet = 10000,
       allow_double = true,
       allow_double_after_split = true,
       max_splits = 2,
@@ -69,23 +76,39 @@ if MBJ == nil then
   }
 end
 
--- Ensure memory structures exist
 if not MBJ.config then MBJ.config = {} end
 if not MBJ.chat_templates then MBJ.chat_templates = {} end
 if MBJ.show_help == nil then MBJ.show_help = true end
 
--- Restore missing chat templates to memory if they got wiped
 for k, v in pairs(default_templates) do
   if MBJ.chat_templates[k] == nil or MBJ.chat_templates[k] == "" then 
     MBJ.chat_templates[k] = v 
   end
 end
 
+------------------------------------------------------------------------
+-- HOST API ARMOR
+------------------------------------------------------------------------
+local function get_time_ms()
+  if type(time_ms) == "function" then return tonumber(time_ms()) or 0 end
+  return 0
+end
+
+local function safe_same_line()
+  if type(ui_same_line) == "function" then ui_same_line() end
+end
+
+local function safe_separator()
+  if type(ui_separator) == "function" then ui_separator() end
+end
+
+local function safe_dummy(w, h)
+  if type(ui_dummy) == "function" then ui_dummy(w, h) end
+end
+
 -- ==========================================
 -- IMPORT / EXPORT LOGIC
 -- ==========================================
--- Function: export_blob
--- Purpose: Handles export blob logic for the Blackjack script.
 local function export_blob()
   local s = "return {config={"
   for k, v in pairs(MBJ.config) do
@@ -97,100 +120,100 @@ local function export_blob()
   end
   s = s .. "},chat_templates={"
   for k, v in pairs(MBJ.chat_templates) do
-    -- Uses [=[ ]=] to completely bypass FFXIV string destruction
     s = s .. k .. "=[=[" .. tostring(v or "") .. "]=],"
   end
   s = s .. "}}"
-  
-  -- Flattening the string so it's easy to triple-click and copy
   s = string.gsub(s, "\n", "")
   s = string.gsub(s, "\r", "")
   return s
 end
 
--- Function: import_blob
--- Purpose: Handles import blob logic for the Blackjack script.
 local function import_blob(str)
   if not str or str == "" then return "Error: Input text box is empty." end
-  
   local loader = loadstring or load
   local fn, err = loader(tostring(str))
   if not fn then return "Error (Syntax): " .. tostring(err) end
-  
   local success, data = pcall(fn)
   if not success then return "Error (Runtime): " .. tostring(data) end
   if type(data) ~= "table" then return "Error: Valid string, but did not contain config table." end
   
-  if data.config then
-    for k, v in pairs(data.config) do MBJ.config[k] = v end
-  end
-  if data.chat_templates then
-    for k, v in pairs(data.chat_templates) do MBJ.chat_templates[k] = v end
-  end
-  
+  if data.config then for k, v in pairs(data.config) do MBJ.config[k] = v end end
+  if data.chat_templates then for k, v in pairs(data.chat_templates) do MBJ.chat_templates[k] = v end end
   return "SUCCESS: Configuration applied successfully!"
 end
 
--- Function: config_file_name
--- Purpose: Handles config file name logic for the Blackjack script.
-local function config_file_name()
-  return "Blackjack.config.json"
+local function config_file_name() return "Blackjack.config.json" end
+local function rtp_log_file_name() return "Blackjack.rtp.csv" end
+
+local function csv_escape(v)
+  local s = tostring(v or "")
+  s = string.gsub(s, '"', '""')
+  return '"' .. s .. '"'
 end
 
--- Function: echo_notice
--- Purpose: Handles echo notice logic for the Blackjack script.
+local function append_rtp_log_row(row)
+  if script_read_text == nil or script_write_text == nil or type(row) ~= "table" then return false end
+  local header = "timestamp_ms,round_id,player,hand,wager,payout,net,result,dealer_total,player_total\n"
+  local line = table.concat({
+    tostring(math.floor(tonumber(row.timestamp_ms) or 0)),
+    tostring(math.floor(tonumber(row.round_id) or 0)),
+    csv_escape(row.player),
+    tostring(math.floor(tonumber(row.hand) or 0)),
+    tostring(math.floor(tonumber(row.wager) or 0)),
+    tostring(math.floor(tonumber(row.payout) or 0)),
+    tostring(math.floor(tonumber(row.net) or 0)),
+    csv_escape(row.result),
+    tostring(math.floor(tonumber(row.dealer_total) or 0)),
+    tostring(math.floor(tonumber(row.player_total) or 0))
+  }, ",") .. "\n"
+
+  local existing = script_read_text(rtp_log_file_name()) or ""
+  if existing == "" then return script_write_text(rtp_log_file_name(), header .. line) == true end
+  return script_write_text(rtp_log_file_name(), existing .. line) == true
+end
+
+local function record_rtp_result(player, handIndex, wager, payout, resultKey, dealerTotal, playerTotal)
+  local w = math.floor(math.max(0, tonumber(wager) or 0))
+  local p = math.floor(math.max(0, tonumber(payout) or 0))
+  MBJ.rtp_wagered = math.floor((tonumber(MBJ.rtp_wagered) or 0) + w)
+  MBJ.rtp_paid = math.floor((tonumber(MBJ.rtp_paid) or 0) + p)
+  
+  append_rtp_log_row({
+    timestamp_ms = get_time_ms(),
+    round_id = tonumber(MBJ.rtp_last_round_id) or 0,
+    player = tostring(player or ""),
+    hand = tonumber(handIndex) or 0,
+    wager = w, payout = p, net = p - w,
+    result = tostring(resultKey or ""),
+    dealer_total = tonumber(dealerTotal) or 0,
+    player_total = tonumber(playerTotal) or 0,
+  })
+end
+
 local function echo_notice(msg)
   local text = tostring(msg or "")
   if text == "" then return end
-  if chat_send ~= nil then
-    chat_send("echo", text)
-  elseif dealer_party ~= nil then
-    dealer_party(text)
-  end
+  if type(chat_send) == "function" then chat_send("echo", text) elseif type(dealer_party) == "function" then dealer_party(text) end
 end
 
--- Function: save_config_file
--- Purpose: Saves config file data from runtime state.
 local function save_config_file()
-  if script_write_text == nil then
+  if type(script_write_text) ~= "function" then
     MBJ.import_status = "ERROR: Host file API unavailable."
     echo_notice("Blackjack config save failed.")
     return false
   end
-
   local ok = script_write_text(config_file_name(), export_blob()) == true
-  if ok then
-    MBJ.import_status = "SUCCESS: Blackjack config saved."
-    echo_notice("Blackjack config saved.")
-  else
-    MBJ.import_status = "ERROR: Could not write Blackjack config file."
-    echo_notice("Blackjack config save failed.")
-  end
+  MBJ.import_status = ok and "SUCCESS: Blackjack config saved." or "ERROR: Could not write file."
+  echo_notice(ok and "Blackjack config saved." or "Blackjack config save failed.")
   return ok
 end
 
--- Function: load_config_file
--- Purpose: Loads config file data into runtime state.
 local function load_config_file()
-  if script_read_text == nil then
-    MBJ.import_status = "ERROR: Host file API unavailable."
-    return false
-  end
-
+  if type(script_read_text) ~= "function" then return false end
   local raw = script_read_text(config_file_name())
-  if raw == nil or raw == "" then
-    MBJ.import_status = "INFO: No Blackjack config file found."
-    return false
-  end
-
+  if raw == nil or raw == "" then return false end
   MBJ.import_status = import_blob(raw)
-  if string.find(MBJ.import_status, "SUCCESS", 1, true) then
-    echo_notice("Blackjack config loaded.")
-    return true
-  end
-
-  echo_notice("Blackjack config load failed.")
-  return false
+  return string.find(MBJ.import_status, "SUCCESS", 1, true) ~= nil
 end
 
 if MBJ._config_loaded ~= true then
@@ -198,45 +221,31 @@ if MBJ._config_loaded ~= true then
   MBJ._config_loaded = true
 end
 
--- ==========================================
--- FLUSH CHAT QUEUE: Prevents reading old rolls
--- ==========================================
--- Function: flush_chat
--- Purpose: Handles flush chat logic for the Blackjack script.
 local function flush_chat()
-  if chat_poll ~= nil then
-    for _ = 1, 500 do
-      local p = chat_poll()
-      if p == nil or p == "" then break end
-    end
+  if type(chat_poll) == "function" then
+    for _ = 1, 50 do if chat_poll() == nil then break end end
   end
 end
 
 -- ==========================================
--- GAME LOGIC
+-- GAME LOGIC & MATH
 -- ==========================================
--- Function: output_channel_name
--- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
-  if default_chat_channel ~= nil then
+  if type(default_chat_channel) == "function" then
     local ch = default_chat_channel()
     if ch == "echo" or ch == "say" or ch == "party" then return ch end
   end
   return "party"
 end
 
--- Function: table_announce
--- Purpose: Queues or sends a message to the configured chat output channel.
 local function table_announce(msg)
   local text = tostring(msg or "")
   if text == "" then return end
-  if chat_send ~= nil then chat_send(output_channel_name(), text) else dealer_party(text) end
+  if type(chat_send) == "function" then chat_send(output_channel_name(), text) elseif type(dealer_party) == "function" then dealer_party(text) end
 end
 
--- Function: fmt
--- Purpose: Formats a chat template by replacing tokens with runtime values.
 local function fmt(template, ctx)
-  if chat_format ~= nil then
+  if type(chat_format) == "function" then
     return chat_format(template or "", tostring((ctx and ctx.player) or ""), tonumber((ctx and ctx.bet) or 0) or 0, tonumber((ctx and ctx.bank) or 0) or 0, tostring((ctx and ctx.card) or ""), tonumber((ctx and ctx.total) or 0) or 0, tonumber((ctx and ctx.dealer_total) or 0) or 0, tostring((ctx and ctx.result) or ""))
   end
 
@@ -250,27 +259,17 @@ local function fmt(template, ctx)
     ["<dealer_total>"] = tostring((ctx and ctx.dealer_total) or ""),
     ["<result>"] = tostring((ctx and ctx.result) or ""),
   }
-
-  for token, value in pairs(values) do
-    msg = string.gsub(msg, token, value)
-  end
-
+  for token, value in pairs(values) do msg = string.gsub(msg, token, value) end
   return msg
 end
 
--- Function: announce
--- Purpose: Builds and sends a formatted chat announcement for the current event.
 local function announce(key, ctx)
   local template = (MBJ.chat_templates or {})[key]
-  if template == nil or template == "" then 
-    template = default_templates[key]
-  end
+  if template == nil or template == "" then template = default_templates[key] end
   if template == nil or template == "" then return end
   table_announce(fmt(template, ctx))
 end
 
--- Function: rank_name
--- Purpose: Handles rank name logic for the Blackjack script.
 local function rank_name(v)
   local n = tonumber(v) or 0
   if n == 1 then return "A" end
@@ -280,8 +279,6 @@ local function rank_name(v)
   return tostring(n)
 end
 
--- Function: card_value
--- Purpose: Handles card value logic for the Blackjack script.
 local function card_value(v)
   local n = tonumber(v) or 0
   if n == 1 then return 11 end
@@ -289,13 +286,16 @@ local function card_value(v)
   return n
 end
 
--- Function: hand_total
--- Purpose: Handles hand total logic for the Blackjack script.
+local function get_cv(card)
+  if type(card) == "table" then return card.v end
+  return tonumber(card) or 0
+end
+
 local function hand_total(cards)
   local total = 0
   local aces = 0
   for i = 1, #cards do
-    local v = tonumber(cards[i]) or 0
+    local v = get_cv(cards[i])
     total = total + card_value(v)
     if v == 1 then aces = aces + 1 end
   end
@@ -306,24 +306,17 @@ local function hand_total(cards)
   return total
 end
 
--- Function: is_natural_blackjack
--- Purpose: Handles is natural blackjack logic for the Blackjack script.
 local function is_natural_blackjack(hand)
-  if hand == nil or hand.cards == nil then return false end
-  if #hand.cards ~= 2 then return false end
+  if hand == nil or hand.cards == nil or #hand.cards ~= 2 then return false end
   if hand.from_split == true then return false end
   return hand_total(hand.cards) == 21
 end
 
--- Function: active_player_name
--- Purpose: Handles active player name logic for the Blackjack script.
 local function active_player_name()
   if MBJ.active_index < 1 or MBJ.active_index > #MBJ.order then return "" end
   return MBJ.order[MBJ.active_index] or ""
 end
 
--- Function: ensure_player
--- Purpose: Handles ensure player logic for the Blackjack script.
 local function ensure_player(name)
   if MBJ.players[name] == nil then
     MBJ.players[name] = { hands = {}, hand_index = 1, wager = 0, splits_used = 0 }
@@ -331,8 +324,6 @@ local function ensure_player(name)
   return MBJ.players[name]
 end
 
--- Function: active_hand
--- Purpose: Handles active hand logic for the Blackjack script.
 local function active_hand(p)
   if p == nil then return nil end
   local hi = p.hand_index or 1
@@ -340,18 +331,12 @@ local function active_hand(p)
   return p.hands[hi]
 end
 
--- Function: label_for
--- Purpose: Handles label for logic for the Blackjack script.
 local function label_for(name, p, handIndex)
   local hi = handIndex or (p and p.hand_index) or 1
-  if p ~= nil and p.hands ~= nil and #p.hands > 1 then
-    return name .. " [H" .. tostring(hi) .. "]"
-  end
+  if p ~= nil and p.hands ~= nil and #p.hands > 1 then return name .. " [H" .. tostring(hi) .. "]" end
   return name
 end
 
--- Function: next_active_hand
--- Purpose: Handles next active hand logic for the Blackjack script.
 local function next_active_hand()
   while MBJ.active_index <= #MBJ.order do
     local name = MBJ.order[MBJ.active_index]
@@ -369,116 +354,112 @@ local function next_active_hand()
   end
 end
 
--- Function: get_double_restriction
--- Purpose: Handles get double restriction logic for the Blackjack script.
-local function get_double_restriction(name, p, h)
+local function check_turn_state()
+  next_active_hand()
+  if active_player_name() == "" then
+    MBJ.phase = "dealer_turn"
+    local total = hand_total(MBJ.dealer.cards)
+    MBJ.info = "Dealer's turn. Total: " .. tostring(total) .. (total < 17 and " (Must Hit)" or " (Must Stand)")
+  else
+    local name = active_player_name()
+    local p = MBJ.players[name]
+    MBJ.phase = "player_turn"
+    MBJ.info = label_for(name, p, p.hand_index) .. " to act."
+  end
+end
+
+-- ==========================================
+-- RESTRICTIONS & VALIDATIONS
+-- ==========================================
+-- check_funds is passed as FALSE from the UI rendering thread to prevent ImGui flickering 
+-- when polling the host ledger, but TRUE during command execution.
+local function get_double_restriction(name, p, h, check_funds)
   if not MBJ.config.allow_double then return "err_dd_disabled" end
   if p == nil or h == nil then return nil end
   if #h.cards ~= 2 or h.doubled then return "err_dd_cards" end
   if h.from_split == true and not MBJ.config.allow_double_after_split then return "err_dd_das" end
-  local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
-  if bank < (tonumber(h.wager) or 0) then return "err_dd_funds" end
+  
+  if check_funds then
+    local bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0
+    if bank < (tonumber(h.wager) or 0) then return "err_dd_funds" end
+  end
   return nil
 end
 
--- Function: can_double
--- Purpose: Handles can double logic for the Blackjack script.
-local function can_double(name, p, h)
-  return get_double_restriction(name, p, h) == nil
-end
+local function can_double(name, p, h, check_funds) return get_double_restriction(name, p, h, check_funds) == nil end
 
--- Function: get_split_restriction
--- Purpose: Handles get split restriction logic for the Blackjack script.
-local function get_split_restriction(name, p, h)
+local function get_split_restriction(name, p, h, check_funds)
   if p == nil or h == nil then return nil end
   if p.splits_used >= (tonumber(MBJ.config.max_splits) or 0) then return "err_split_max" end
   if #h.cards ~= 2 then return "err_split_cards" end
-  local c1 = tonumber(h.cards[1]) or 0
-  local c2 = tonumber(h.cards[2]) or 0
+  
+  local c1 = get_cv(h.cards[1])
+  local c2 = get_cv(h.cards[2])
   local sameRank = (c1 == c2)
+  
+  -- True if BOTH cards evaluate mathematically to 10 (10, J, Q, K)
   local bothTenValue = (card_value(c1) == 10 and card_value(c2) == 10)
+  
   if not sameRank and not bothTenValue then return "err_split_value" end
-  if tonumber(h.cards[1]) == 1 and not MBJ.config.split_aces then return "err_split_aces" end
-  local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
-  if bank < (tonumber(h.wager) or 0) then return "err_split_funds" end
+  if tonumber(c1) == 1 and not MBJ.config.split_aces then return "err_split_aces" end
+  
+  if check_funds then
+    local bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0
+    if bank < (tonumber(h.wager) or 0) then return "err_split_funds" end
+  end
   return nil
 end
 
--- Function: can_split
--- Purpose: Handles can split logic for the Blackjack script.
-local function can_split(name, p, h)
-  return get_split_restriction(name, p, h) == nil
-end
+local function can_split(name, p, h, check_funds) return get_split_restriction(name, p, h, check_funds) == nil end
 
--- Function: effective_draw_delay_ms
--- Purpose: Handles effective draw delay ms logic for the Blackjack script.
 local function effective_draw_delay_ms()
   local v = tonumber(MBJ.draw.delay_ms) or 350
-  if v < 25 then v = 25 end
-  if v > 5000 then v = 5000 end
-  MBJ.draw.delay_ms = math.floor(v)
+  local function clamp(val, minv, maxv) if val < minv then return minv elseif val > maxv then return maxv else return val end end
+  MBJ.draw.delay_ms = clamp(v, 25, 5000)
   return MBJ.draw.delay_ms
 end
 
--- Function: effective_initial_deal_delay_ms
--- Purpose: Handles effective initial deal delay ms logic for the Blackjack script.
 local function effective_initial_deal_delay_ms()
   local v = tonumber(MBJ.draw.initial_deal_delay_ms) or 1000
-  if v < 100 then v = 100 end
-  if v > 5000 then v = 5000 end
-  MBJ.draw.initial_deal_delay_ms = math.floor(v)
+  local function clamp(val, minv, maxv) if val < minv then return minv elseif val > maxv then return maxv else return val end end
+  MBJ.draw.initial_deal_delay_ms = clamp(v, 100, 5000)
   return MBJ.draw.initial_deal_delay_ms
 end
 
--- Function: effective_draw_timeout_ms
--- Purpose: Handles effective draw timeout ms logic for the Blackjack script.
 local function effective_draw_timeout_ms()
   local t = tonumber(MBJ.draw.timeout_ms) or 1500
-  local minByDelay = effective_draw_delay_ms() * 4
-  if t < minByDelay then t = minByDelay end
-  if t < 900 then t = 900 end
-  if t > 6000 then t = 6000 end
-  MBJ.draw.timeout_ms = math.floor(t)
+  local function clamp(val, minv, maxv) if val < minv then return minv elseif val > maxv then return maxv else return val end end
+  MBJ.draw.timeout_ms = clamp(t, math.max(900, effective_draw_delay_ms() * 4), 6000)
   return MBJ.draw.timeout_ms
 end
 
--- Function: effective_reveal_delay_ms
--- Purpose: Handles effective reveal delay ms logic for the Blackjack script.
 local function effective_reveal_delay_ms()
   local v = tonumber(MBJ.draw.reveal_delay_ms) or 1000
-  if v < 100 then v = 100 end
-  if v > 5000 then v = 5000 end
-  MBJ.draw.reveal_delay_ms = math.floor(v)
+  local function clamp(val, minv, maxv) if val < minv then return minv elseif val > maxv then return maxv else return val end end
+  MBJ.draw.reveal_delay_ms = clamp(v, 100, 5000)
   return MBJ.draw.reveal_delay_ms
 end
 
--- Function: enqueue_draw
--- Purpose: Handles enqueue draw logic for the Blackjack script.
+-- ==========================================
+-- ASYNC ROLL DRAWING
+-- ==========================================
 local function enqueue_draw(on_card)
   if on_card == nil then return end
   table.insert(MBJ.draw.pending, on_card)
 end
 
--- Function: process_pending_draws
--- Purpose: Processes pending draws updates for the current game state.
 local function process_pending_draws()
   local d = MBJ.draw
   if d == nil then return end
 
-  effective_draw_timeout_ms()
-  effective_initial_deal_delay_ms()
-  effective_reveal_delay_ms()
-
-  local now = (time_ms ~= nil) and time_ms() or 0
+  effective_draw_timeout_ms(); effective_initial_deal_delay_ms(); effective_reveal_delay_ms()
+  local now = get_time_ms()
 
   if d.resolved_cb ~= nil and now >= (d.resolved_at or 0) then
-    local cb = d.resolved_cb
-    local rolled = d.resolved_roll
-    d.resolved_cb = nil
-    d.resolved_roll = nil
-    d.resolved_at = 0
+    local cb, rolled = d.resolved_cb, d.resolved_roll
+    d.resolved_cb, d.resolved_roll, d.resolved_at = nil, nil, 0
     if cb ~= nil then cb(rolled) end
-    now = (time_ms ~= nil) and time_ms() or now
+    now = get_time_ms()
   end
 
   if d.active == nil and d.resolved_cb == nil and #d.pending > 0 then
@@ -496,41 +477,38 @@ local function process_pending_draws()
 
   if (not d.inflight) and now >= (d.next_ms or 0) then
     local ch = tostring(d.channel or "party")
-    if dice_command == nil or not dice_command(ch, 13) then
+    if type(dice_command) ~= "function" or not dice_command(ch, 13) then
       MBJ.info = "Dice command unavailable (/dice " .. ch .. " 13)."
       MBJ.phase = "idle"
-      d.pending = {}
-      d.active = nil
-      d.inflight = false
-      d.resolved_cb = nil
-      d.resolved_roll = nil
-      d.resolved_at = 0
+      d.pending, d.active, d.inflight, d.resolved_cb, d.resolved_roll, d.resolved_at = {}, nil, false, nil, nil, 0
       return
     end
-    d.inflight = true
-    d.sent_ms = now
+    d.inflight, d.sent_ms = true, now
   end
 
   for _ = 1, 24 do
-    local packet = (chat_poll ~= nil) and chat_poll() or ""
+    local packet = (type(chat_poll) == "function") and chat_poll() or ""
     if packet == nil or packet == "" then break end
 
     local _, _, _, message = string.match(packet, "^([^|]*)|([^|]*)|([^|]*)|(.*)$")
     if message ~= nil then
-      local rolled = (dice_roll_value ~= nil) and dice_roll_value(message) or 0
-      local upper = (dice_roll_upper ~= nil) and dice_roll_upper(message) or 0
+      local rolled = (type(dice_roll_value) == "function") and dice_roll_value(message) or 0
+      local upper = (type(dice_roll_upper) == "function") and dice_roll_upper(message) or 0
       if rolled >= 1 and rolled <= 13 and upper == 13 then
         local cb = d.active
-        d.active = nil
-        d.inflight = false
-        d.sent_ms = 0
+        d.active, d.inflight, d.sent_ms = nil, false, 0
         local nextDelay = tonumber(d.next_delay_ms) or effective_draw_delay_ms()
         d.next_delay_ms = nil
-        d.next_ms = ((time_ms ~= nil) and time_ms() or now) + nextDelay
+        d.next_ms = get_time_ms() + nextDelay
+        
+        local suits = {"♠", "♥", "♦", "♣"}
+        local s = suits[math.random(1, 4)]
+        local card_obj = { v = rolled, s = s, r = (s == "♥" or s == "♦") }
+
         if cb ~= nil then
           d.resolved_cb = cb
-          d.resolved_roll = rolled
-          d.resolved_at = ((time_ms ~= nil) and time_ms() or now) + effective_reveal_delay_ms()
+          d.resolved_roll = card_obj
+          d.resolved_at = get_time_ms() + effective_reveal_delay_ms()
         end
         break
       end
@@ -538,9 +516,13 @@ local function process_pending_draws()
   end
 end
 
--- Function: settle_results
--- Purpose: Settles results outcomes and applies payouts/state changes.
+-- ==========================================
+-- ACTIONS & SETTLEMENT
+-- ==========================================
 local function settle_results()
+  MBJ.rtp_last_round_id = (tonumber(MBJ.rtp_last_round_id) or 0) + 1
+  MBJ.rtp_rounds = (tonumber(MBJ.rtp_rounds) or 0) + 1
+
   local dealer_total = hand_total(MBJ.dealer.cards)
   local dealer_natural = (#MBJ.dealer.cards == 2 and dealer_total == 21)
   local dealer_bust = dealer_total > 21
@@ -583,15 +565,16 @@ local function settle_results()
             template_key = "result_push"
           end
 
-          if delta ~= 0 and dealer_add_bank ~= nil then dealer_add_bank(name, delta) end
+          if delta ~= 0 and type(dealer_add_bank) == "function" then dealer_add_bank(name, delta) end
 
-          local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
+          local payout_for_rtp = (tonumber(wager) or 0) + (tonumber(delta) or 0)
+          if payout_for_rtp < 0 then payout_for_rtp = 0 end
+          record_rtp_result(name, hi, wager, payout_for_rtp, template_key, dealer_total, pt)
+
+          local bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0
           announce(template_key, {
             player = label_for(name, p, hi),
-            total = pt,
-            dealer_total = dealer_total,
-            bet = wager,
-            bank = bank,
+            total = pt, dealer_total = dealer_total, bet = wager, bank = bank,
           })
         end
       end
@@ -603,164 +586,120 @@ local function settle_results()
   MBJ.info = "Resolved. Dealer total " .. tostring(dealer_total)
 end
 
--- Function: start_round
--- Purpose: Starts round for the current game flow.
 local function start_round()
-  flush_chat() -- Empties old dice rolls from previous tests/games
-  
-  MBJ.players = {}
-  MBJ.order = {}
-  MBJ.active_index = 1
-  MBJ.dealer.cards = {}
+  flush_chat()
+  MBJ.players, MBJ.order, MBJ.active_index, MBJ.dealer.cards = {}, {}, 1, {}
   MBJ.round_active = true
-  MBJ.draw.pending = {}
-  MBJ.draw.active = nil
-  MBJ.draw.inflight = false
-  MBJ.draw.sent_ms = 0
-  MBJ.draw.next_ms = 0
-  MBJ.draw.resolved_cb = nil
-  MBJ.draw.resolved_roll = nil
-  MBJ.draw.resolved_at = 0
+  MBJ.draw.pending, MBJ.draw.active, MBJ.draw.inflight = {}, nil, false
+  MBJ.draw.sent_ms, MBJ.draw.next_ms, MBJ.draw.resolved_at = 0, 0, 0
+  MBJ.draw.resolved_cb, MBJ.draw.resolved_roll = nil, nil
 
-  local count = dealer_player_count()
+  local count = 0
+  if type(dealer_player_count) == "function" then count = dealer_player_count() end
+  
   for i = 1, count do
-    local name = dealer_player_name(i)
-    if name ~= nil and name ~= "" and dealer_is_eligible(name) then
+    local name = ""
+    if type(dealer_player_name) == "function" then name = dealer_player_name(i) end
+    
+    local eligible = false
+    if type(dealer_is_eligible) == "function" then eligible = dealer_is_eligible(name) end
+    
+    if name ~= "" and eligible then
       table.insert(MBJ.order, name)
       local p = ensure_player(name)
-      local wager = (dealer_get_wager ~= nil) and (tonumber(dealer_get_wager(name)) or 0) or 0
-      if wager <= 0 then wager = tonumber(MBJ.config.min_bet) or 10 end
-      if wager < (tonumber(MBJ.config.min_bet) or 10) then wager = tonumber(MBJ.config.min_bet) or 10 end
-      if wager > (tonumber(MBJ.config.max_bet) or 10000) then wager = tonumber(MBJ.config.max_bet) or 10000 end
-      if dealer_set_wager ~= nil then dealer_set_wager(name, wager) end
+      local wager = (type(dealer_get_wager) == "function") and (tonumber(dealer_get_wager(name)) or 0) or 0
       p.wager = wager
       p.hand_index = 1
       p.splits_used = 0
-      p.hands = {
-        {
-          cards = {},
-          finished = false,
-          bust = false,
-          standing = false,
-          doubled = false,
-          from_split = false,
-          wager = wager,
-        }
-      }
+      p.hands = { { cards = {}, finished = false, bust = false, standing = false, doubled = false, from_split = false, wager = wager } }
     end
   end
 
   if #MBJ.order == 0 then
-    MBJ.phase = "idle"
-    MBJ.info = "No eligible players in dealer roster."
-    MBJ.round_active = false
+    MBJ.phase, MBJ.info, MBJ.round_active = "idle", "No eligible players.", false
     return
   end
 
-  MBJ.phase = "awaiting_dealer"
-  MBJ.info = "Round ready. Use /casino bjstart for dealer upcard, then /casino deal."
   announce("start", { total = #MBJ.order })
+  
+  enqueue_draw(function(c)
+    table.insert(MBJ.dealer.cards, c)
+    announce("dealer_first", { card = rank_name(c.v) })
+    check_turn_state()
+  end)
+  table.insert(MBJ.action_history, { action = "dealer_draw", timestamp = get_time_ms() })
 end
 
--- Function: draw_for_active
--- Purpose: Handles draw for active logic for the Blackjack script.
 local function draw_for_active(kind)
   next_active_hand()
   local name = active_player_name()
   if name == "" then
     MBJ.phase = "awaiting_dealer"
-    MBJ.info = "All player hands complete. Use /casino dealer to draw dealer cards, then /casino resolve."
+    MBJ.info = "All player hands complete. Draw dealer cards, then resolve."
     return
   end
 
   local p = MBJ.players[name]
   local h = active_hand(p)
   if p == nil or h == nil or h.finished then
-    next_active_hand()
-    MBJ.info = "Advanced to next hand."
-    return
+    next_active_hand(); MBJ.info = "Advanced to next hand."; return
   end
 
   MBJ.phase = "dealing"
-  MBJ.info = label_for(name, p, p.hand_index) .. " rolling /dice party 13..."
+  MBJ.info = label_for(name, p, p.hand_index) .. " drawing..."
 
   enqueue_draw(function(c)
     if h.finished then return end
-
     table.insert(h.cards, c)
     local total = hand_total(h.cards)
 
     if kind == "hit" then
-      announce("player_hit", { player = label_for(name, p, p.hand_index), card = rank_name(c), total = total })
+      announce("player_hit", { player = label_for(name, p, p.hand_index), card = rank_name(c.v), total = total })
     elseif kind == "deal_first" then
-      announce("player_draw2", { player = label_for(name, p, p.hand_index), card = rank_name(c) })
+      announce("player_draw2", { player = label_for(name, p, p.hand_index), card = rank_name(c.v) })
     else
-      announce("player_draw", { player = label_for(name, p, p.hand_index), card = rank_name(c), total = total })
+      announce("player_draw", { player = label_for(name, p, p.hand_index), card = rank_name(c.v), total = total })
     end
 
-    if total > 21 then
-      h.bust = true
+    if total >= 21 then
+      h.bust = (total > 21)
       h.finished = true
-      announce("player_bust", { player = label_for(name, p, p.hand_index) })
+      if h.bust then
+        announce("player_bust", { player = label_for(name, p, p.hand_index) })
+      else
+        h.standing = true
+        announce("player_stand", { player = label_for(name, p, p.hand_index), total = 21 })
+      end
       p.hand_index = p.hand_index + 1
-      next_active_hand()
     end
-
-    if active_player_name() == "" then
-      MBJ.phase = "awaiting_dealer"
-      MBJ.info = "Players complete. Use /casino dealer, then /casino resolve."
-    else
-      MBJ.phase = "player_turn"
-      MBJ.info = label_for(active_player_name(), MBJ.players[active_player_name()], (MBJ.players[active_player_name()] or {}).hand_index) .. " to act."
-    end
+    check_turn_state()
   end)
 end
 
--- Function: do_stand
--- Purpose: Handles do stand logic for the Blackjack script.
 local function do_stand()
-  next_active_hand()
   local name = active_player_name()
-  if name == "" then
-    MBJ.phase = "awaiting_dealer"
-    MBJ.info = "No active player."
-    return
-  end
+  if name == "" then return end
 
   local p = MBJ.players[name]
   local h = active_hand(p)
   if p == nil or h == nil or h.finished then return end
 
-  h.standing = true
-  h.finished = true
+  h.standing, h.finished = true, true
   announce("player_stand", { player = label_for(name, p, p.hand_index), total = hand_total(h.cards) })
   p.hand_index = p.hand_index + 1
-  next_active_hand()
-
-  if active_player_name() == "" then
-    MBJ.phase = "awaiting_dealer"
-    MBJ.info = "Players complete. Use /casino dealer, then /casino resolve."
-  else
-    MBJ.phase = "player_turn"
-    MBJ.info = label_for(active_player_name(), MBJ.players[active_player_name()], (MBJ.players[active_player_name()] or {}).hand_index) .. " to act."
-  end
+  check_turn_state()
 end
 
--- Function: do_double
--- Purpose: Handles do double logic for the Blackjack script.
 local function do_double()
-  next_active_hand()
   local name = active_player_name()
   local p = MBJ.players[name]
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
   
-  local restriction = get_double_restriction(name, p, h)
+  -- True is passed here to enforce the actual financial check
+  local restriction = get_double_restriction(name, p, h, true)
   if restriction then
-    local wager = tonumber(h.wager) or 0
-    local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
-    local tpl = (MBJ.chat_templates or {})[restriction] or "Double down not allowed."
-    local formatted_err = fmt(tpl, { bet = wager, bank = bank })
+    local formatted_err = fmt((MBJ.chat_templates or {})[restriction] or "Double down not allowed.", { bet = tonumber(h.wager) or 0, bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0 })
     MBJ.info = formatted_err
     table_announce(name .. " cannot double down: " .. formatted_err)
     return
@@ -768,173 +707,96 @@ local function do_double()
 
   h.wager = (tonumber(h.wager) or 0) * 2
   h.doubled = true
-
-  MBJ.phase = "dealing"
-  MBJ.info = label_for(name, p, p.hand_index) .. " doubling, rolling /dice party 13..."
+  MBJ.info = label_for(name, p, p.hand_index) .. " doubling..."
 
   enqueue_draw(function(c)
     table.insert(h.cards, c)
     local total = hand_total(h.cards)
-    h.finished = true
-    h.standing = total <= 21
-    h.bust = total > 21
+    h.finished, h.standing, h.bust = true, total <= 21, total > 21
 
-    announce("player_double", { player = label_for(name, p, p.hand_index), card = rank_name(c), total = total })
+    announce("player_double", { player = label_for(name, p, p.hand_index), card = rank_name(c.v), total = total })
     if h.bust then announce("player_bust", { player = label_for(name, p, p.hand_index) }) end
 
     p.hand_index = p.hand_index + 1
-    next_active_hand()
-    if active_player_name() == "" then
-      MBJ.phase = "awaiting_dealer"
-      MBJ.info = "Players complete. Use /casino dealer, then /casino resolve."
-    else
-      MBJ.phase = "player_turn"
-      MBJ.info = label_for(active_player_name(), MBJ.players[active_player_name()], (MBJ.players[active_player_name()] or {}).hand_index) .. " to act."
-    end
+    check_turn_state()
   end)
 end
 
--- Function: do_split
--- Purpose: Handles do split logic for the Blackjack script.
 local function do_split()
-  next_active_hand()
   local name = active_player_name()
   local p = MBJ.players[name]
   local h = active_hand(p)
   if name == "" or p == nil or h == nil then return end
   
-  local restriction = get_split_restriction(name, p, h)
+  -- True is passed here to enforce the actual financial check
+  local restriction = get_split_restriction(name, p, h, true)
   if restriction then
-    local wager = tonumber(h.wager) or 0
-    local bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0
-    local tpl = (MBJ.chat_templates or {})[restriction] or "Split not allowed."
-    local formatted_err = fmt(tpl, { total = tonumber(MBJ.config.max_splits) or 0, bet = wager, bank = bank })
+    local formatted_err = fmt((MBJ.chat_templates or {})[restriction] or "Split not allowed.", { total = tonumber(MBJ.config.max_splits) or 0, bet = tonumber(h.wager) or 0, bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0 })
     MBJ.info = formatted_err
     table_announce(name .. " cannot split: " .. formatted_err)
     return
   end
 
-  local c1 = h.cards[1]
-  local c2 = h.cards[2]
+  local c1, c2 = h.cards[1], h.cards[2]
   h.cards = { c1 }
-  h.finished = false
-  h.bust = false
-  h.standing = false
-  h.doubled = false
-  h.from_split = true
+  h.finished, h.bust, h.standing, h.doubled, h.from_split = false, false, false, false, true
 
-  local h2 = {
-    cards = { c2 },
-    finished = false,
-    bust = false,
-    standing = false,
-    doubled = false,
-    from_split = true,
-    wager = h.wager,
-  }
-
+  local h2 = { cards = { c2 }, finished = false, bust = false, standing = false, doubled = false, from_split = true, wager = h.wager }
   table.insert(p.hands, p.hand_index + 1, h2)
   p.splits_used = (p.splits_used or 0) + 1
 
-  announce("player_split", {
-    player = label_for(name, p, p.hand_index),
-    bet = h.wager,
-    bank = (dealer_get_bank ~= nil) and (tonumber(dealer_get_bank(name)) or 0) or 0,
-  })
-
-  MBJ.phase = "player_turn"
-  MBJ.info = "Split complete. Use /casino deal or /casino hit for " .. label_for(name, p, p.hand_index) .. "."
+  announce("player_split", { player = label_for(name, p, p.hand_index), bet = h.wager, bank = (type(dealer_get_bank) == "function") and (tonumber(dealer_get_bank(name)) or 0) or 0 })
+  check_turn_state()
 end
 
--- Function: dealer_draw_one
--- Purpose: Handles dealer draw one logic for the Blackjack script.
 local function dealer_draw_one()
-  if not MBJ.round_active then
-    MBJ.info = "No active round. Use /casino bjstart first."
-    return
-  end
-
-  MBJ.phase = "dealing"
-  MBJ.info = "Dealer rolling /dice party 13..."
+  MBJ.info = "Dealer drawing..."
 
   enqueue_draw(function(c)
-    local wasEmpty = (#MBJ.dealer.cards == 0)
     table.insert(MBJ.dealer.cards, c)
-    local total = hand_total(MBJ.dealer.cards)
-    if wasEmpty then
-      announce("dealer_first", { card = rank_name(c) })
-    else
-      announce("dealer_draw", { card = rank_name(c), total = total })
-    end
-    MBJ.phase = "awaiting_dealer"
-    MBJ.info = "Dealer total " .. tostring(total) .. ". Draw again or /casino resolve."
+    announce("dealer_draw", { card = rank_name(c.v), total = hand_total(MBJ.dealer.cards) })
+    check_turn_state()
   end)
-
-  table.insert(MBJ.action_history, {
-    action = "dealer_draw",
-    timestamp = time_ms ~= nil and time_ms() or 0
-  })
+  table.insert(MBJ.action_history, { action = "dealer_draw", timestamp = get_time_ms() })
 end
 
--- Function: undo_last_action
--- Purpose: Handles undo last action logic for the Blackjack script.
 local function undo_last_action()
-  if #MBJ.action_history == 0 then
-    MBJ.info = "No actions to undo."
-    return
-  end
-
+  if #MBJ.action_history == 0 then MBJ.info = "No actions to undo."; return end
   local last = table.remove(MBJ.action_history)
+  
   if last.action == "dealer_draw" then
     if #MBJ.dealer.cards > 0 then
       table.remove(MBJ.dealer.cards)
-      local total = hand_total(MBJ.dealer.cards)
-      if #MBJ.dealer.cards == 0 then
-        MBJ.info = "Dealer card removed. Ready for next action."
-      else
-        MBJ.info = "Dealer card removed. New total: " .. tostring(total)
-      end
       table_announce("(Dealer action undone)")
+      check_turn_state()
     end
   elseif last.action == "player_draw" or last.action == "player_hit" then
-    local name = last.player_name
-    local hand_idx = last.hand_idx
+    local name, hand_idx = last.player_name, last.hand_idx
     if name and MBJ.players[name] and MBJ.players[name].hands[hand_idx] then
       local h = MBJ.players[name].hands[hand_idx]
       if #h.cards > 0 then
         table.remove(h.cards)
-        h.bust = false
-        h.finished = false
-        local total = hand_total(h.cards)
-        MBJ.info = "Card removed from " .. name .. ". New total: " .. tostring(total)
+        h.bust, h.finished, h.standing = false, false, false
+        MBJ.players[name].hand_index = hand_idx
         table_announce("(" .. name .. " card removed)")
+        
+        -- Reset Phase Index if Dealer had already taken over
+        for idx, n in ipairs(MBJ.order) do if n == name then MBJ.active_index = idx end end
+        check_turn_state()
       end
     end
   end
 end
 
--- Function: on_command
--- Purpose: Routes script commands and executes command-specific game actions.
 function on_command(cmd, ...)
   local command = string.lower(tostring(cmd or ""))
-
-  if command == "bjstart" then
-    start_round()
-    if MBJ.round_active then dealer_draw_one() end
-    return "ok"
-  end
-
+  if command == "bjstart" then start_round(); return "ok" end
   if command == "deal" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
-
-    next_active_hand()
+    if not MBJ.round_active then MBJ.info = "No active round."; return "no_round" end
     local name = active_player_name()
     local p = MBJ.players[name]
     local h = active_hand(p)
-    if h == nil then
-      MBJ.info = "No active hand to deal."
-      return "no_hand"
-    end
+    if h == nil then MBJ.info = "No active hand to deal."; return "no_hand" end
 
     if #h.cards == 0 then
       draw_for_active("deal_first")
@@ -943,304 +805,307 @@ function on_command(cmd, ...)
     else
       draw_for_active("deal")
     end
-
-    table.insert(MBJ.action_history, {
-      action = "player_draw",
-      player_name = name,
-      hand_idx = p.hand_index,
-      timestamp = time_ms ~= nil and time_ms() or 0
-    })
-
+    table.insert(MBJ.action_history, { action = "player_draw", player_name = name, hand_idx = p.hand_index, timestamp = get_time_ms() })
     return "ok"
   end
-
   if command == "hit" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
+    if not MBJ.round_active then return "no_round" end
     local name = active_player_name()
     draw_for_active("hit")
-
-    table.insert(MBJ.action_history, {
-      action = "player_hit",
-      player_name = name,
-      hand_idx = (MBJ.players[name] and MBJ.players[name].hand_index) or 1,
-      timestamp = time_ms ~= nil and time_ms() or 0
-    })
+    table.insert(MBJ.action_history, { action = "player_hit", player_name = name, hand_idx = (MBJ.players[name] and MBJ.players[name].hand_index) or 1, timestamp = get_time_ms() })
     return "ok"
   end
-
-  if command == "stand" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
-    do_stand()
-    return "ok"
-  end
-
-  if command == "dd" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
-    do_double()
-    return "ok"
-  end
-
-  if command == "split" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
-    do_split()
-    return "ok"
-  end
-
-  if command == "dealer" then
-    dealer_draw_one()
-    return "ok"
-  end
-
-  if command == "resolve" then
-    if not MBJ.round_active then MBJ.info = "No active round." return "no_round" end
-    settle_results()
-    return "ok"
-  end
-
-  if command == "undo" then
-    undo_last_action()
-    return "ok"
-  end
-
+  if command == "stand" then if not MBJ.round_active then return "no_round" end do_stand(); return "ok" end
+  if command == "dd" then if not MBJ.round_active then return "no_round" end do_double(); return "ok" end
+  if command == "split" then if not MBJ.round_active then return "no_round" end do_split(); return "ok" end
+  if command == "dealer" then dealer_draw_one(); return "ok" end
+  if command == "resolve" then if not MBJ.round_active then return "no_round" end settle_results(); return "ok" end
+  if command == "undo" then undo_last_action(); return "ok" end
   return "unknown"
 end
 
--- Function: draw_config_ui
--- Purpose: Renders the configuration panel where the dealer edits script settings.
-function draw_config_ui()
-  ui_text_colored("Macro Blackjack Config", 0.8, 0.95, 0.8, 1.0)
-  ui_separator()
-
-  MBJ.config.min_bet = math.max(0, ui_input_int("Min Bet##mbj_min", tonumber(MBJ.config.min_bet) or 10))
-  MBJ.config.max_bet = math.max(tonumber(MBJ.config.min_bet) or 10, ui_input_int("Max Bet##mbj_max", tonumber(MBJ.config.max_bet) or 10000))
-  MBJ.config.allow_double = ui_checkbox("Allow Double Down##mbj_double", MBJ.config.allow_double)
-  MBJ.config.allow_double_after_split = ui_checkbox("Allow Double After Split##mbj_das", MBJ.config.allow_double_after_split)
-  MBJ.config.max_splits = math.max(0, ui_input_int("Max Splits##mbj_split_max", tonumber(MBJ.config.max_splits) or 2))
-  MBJ.config.split_aces = ui_checkbox("Allow Split Aces##mbj_split_aces", MBJ.config.split_aces)
-  MBJ.config.blackjack_payout_x100 = math.max(100, ui_input_int("Blackjack Payout % ##mbj_bjpay", tonumber(MBJ.config.blackjack_payout_x100) or 150))
-
-  MBJ.draw.delay_ms = ui_input_int("Dice delay (ms)##mbj_dice_delay", effective_draw_delay_ms())
-  MBJ.draw.initial_deal_delay_ms = ui_input_int("dealing delay (ms)##mbj_initial_deal_delay", effective_initial_deal_delay_ms())
-  MBJ.draw.reveal_delay_ms = ui_input_int("Result reveal delay (ms)##mbj_reveal_delay", effective_reveal_delay_ms())
-  MBJ.draw.timeout_ms = ui_input_int("Dice timeout (ms)##mbj_dice_timeout", effective_draw_timeout_ms())
-  effective_draw_timeout_ms()
-  effective_initial_deal_delay_ms()
-  effective_reveal_delay_ms()
-
-  ui_separator()
-  ui_text_colored("Chat Templates", 0.9, 0.95, 1.0, 1.0)
-  MBJ.chat_templates.start = ui_input_text("Round Start##mbj_tpl_start", MBJ.chat_templates.start or "", 512)
-  MBJ.chat_templates.dealer_first = ui_input_text("Dealer First Card##mbj_tpl_dealer_first", MBJ.chat_templates.dealer_first or "", 512)
-  MBJ.chat_templates.dealer_draw = ui_input_text("Dealer Draw##mbj_tpl_dealer_draw", MBJ.chat_templates.dealer_draw or "", 512)
-  MBJ.chat_templates.player_draw2 = ui_input_text("Player Deal First Card##mbj_tpl_player_draw2", MBJ.chat_templates.player_draw2 or "", 512)
-  MBJ.chat_templates.player_draw = ui_input_text("Player Draw / Deal Final##mbj_tpl_player_draw", MBJ.chat_templates.player_draw or "", 512)
-  MBJ.chat_templates.player_hit = ui_input_text("Player Hit##mbj_tpl_player_hit", MBJ.chat_templates.player_hit or "", 512)
-  MBJ.chat_templates.player_stand = ui_input_text("Player Stand##mbj_tpl_player_stand", MBJ.chat_templates.player_stand or "", 512)
-  MBJ.chat_templates.player_double = ui_input_text("Player Double##mbj_tpl_player_double", MBJ.chat_templates.player_double or "", 512)
-  MBJ.chat_templates.player_split = ui_input_text("Player Split##mbj_tpl_player_split", MBJ.chat_templates.player_split or "", 512)
-  MBJ.chat_templates.player_bust = ui_input_text("Player Bust Notification##mbj_tpl_player_bust", MBJ.chat_templates.player_bust or "", 512)
-  
-  ui_text_colored("Payout Outcomes", 0.7, 0.85, 1.0, 1.0)
-  MBJ.chat_templates.result_push = ui_input_text("Push Outcome##mbj_tpl_res_push", MBJ.chat_templates.result_push or "", 512)
-  MBJ.chat_templates.result_lose_bj = ui_input_text("Dealer BJ Outcome##mbj_tpl_res_lose_bj", MBJ.chat_templates.result_lose_bj or "", 512)
-  MBJ.chat_templates.result_bj = ui_input_text("Player BJ Outcome##mbj_tpl_res_res_bj", MBJ.chat_templates.result_bj or "", 512)
-  MBJ.chat_templates.result_win_bust = ui_input_text("Dealer Bust Outcome##mbj_tpl_res_win_bust", MBJ.chat_templates.result_win_bust or "", 512)
-  MBJ.chat_templates.result_win = ui_input_text("Standard Win Outcome##mbj_tpl_res_win", MBJ.chat_templates.result_win or "", 512)
-  MBJ.chat_templates.result_lose = ui_input_text("Standard Lose Outcome##mbj_tpl_res_lose", MBJ.chat_templates.result_lose or "", 512)
-
-  ui_text_colored("Action Restriction Messages", 0.9, 0.7, 0.7, 1.0)
-  MBJ.chat_templates.err_dd_disabled = ui_input_text("DD Disabled##mbj_err_dd_dis", MBJ.chat_templates.err_dd_disabled or "", 512)
-  MBJ.chat_templates.err_dd_cards = ui_input_text("DD Card Count##mbj_err_dd_crd", MBJ.chat_templates.err_dd_cards or "", 512)
-  MBJ.chat_templates.err_dd_das = ui_input_text("DD After Split Error##mbj_err_dd_das", MBJ.chat_templates.err_dd_das or "", 512)
-  MBJ.chat_templates.err_dd_funds = ui_input_text("DD Bank Balance Error##mbj_err_dd_fnd", MBJ.chat_templates.err_dd_funds or "", 512)
-  MBJ.chat_templates.err_split_max = ui_input_text("Split Max Reached##mbj_err_sp_max", MBJ.chat_templates.err_split_max or "", 512)
-  MBJ.chat_templates.err_split_cards = ui_input_text("Split Card Count##mbj_err_sp_crd", MBJ.chat_templates.err_split_cards or "", 512)
-  MBJ.chat_templates.err_split_aces = ui_input_text("Split Aces Blocked##mbj_err_sp_ace", MBJ.chat_templates.err_split_aces or "", 512)
-  MBJ.chat_templates.err_split_value = ui_input_text("Split Card Mismatch##mbj_err_sp_val", MBJ.chat_templates.err_split_value or "", 512)
-  MBJ.chat_templates.err_split_funds = ui_input_text("Split Bank Balance Error##mbj_err_sp_fnd", MBJ.chat_templates.err_split_funds or "", 512)
-
-  ui_separator()
-  ui_text_colored("Import / Export Configuration Blob", 0.4, 0.8, 1.0, 1.0)
-  
-  if MBJ.share_blob == nil then MBJ.share_blob = "" end
-  MBJ.share_blob = ui_input_text("Data String##mbj_blob_field", MBJ.share_blob, 8192)
-  
-  if ui_button("Generate Export Blob##mbj_btn_exp") then
-    MBJ.share_blob = export_blob()
-    MBJ.import_status = "SUCCESS: Generated export string!"
+-- ==========================================
+-- CANVAS UI DRAWING
+-- ==========================================
+local function draw_visual_cards(cards, x, y)
+  if cards == nil or #cards == 0 then return end
+  for i = 1, #cards do
+    local c = cards[i]
+    -- 25px overlap to stack neatly
+    if type(ui_set_cursor) == "function" then ui_set_cursor(x + ((i - 1) * 25), y) end
+    if type(ui_card) == "function" then
+      if type(c) == "table" then
+        ui_card(rank_name(c.v), c.s, c.r)
+      else
+        ui_card(rank_name(c), "♠", false)
+      end
+    end
   end
-  ui_same_line()
-  if ui_button("Import From Blob##mbj_btn_imp") then
-    MBJ.import_status = import_blob(MBJ.share_blob)
-  end
-  ui_same_line()
-  if ui_button("Save Config##mbj_btn_save_file") then
-    save_config_file()
-  end
-  ui_same_line()
-  if ui_button("Load Config##mbj_btn_load_file") then
-    load_config_file()
-  end
+end
+
+local function draw_game_canvas()
+  local w = (type(ui_window_width) == "function") and ui_window_width() or 600
+  local cx = (type(ui_cursor_x) == "function") and ui_cursor_x() or 10
+  local cy = (type(ui_cursor_y) == "function") and ui_cursor_y() or 10
+  local canvas_w = w - (cx * 2)
+  if canvas_w < 400 then canvas_w = 400 end
   
-  if MBJ.import_status and MBJ.import_status ~= "" then
-    if string.find(MBJ.import_status, "SUCCESS") then
-      ui_text_colored("Transfer Status: " .. MBJ.import_status, 0.3, 1.0, 0.3, 1.0)
+  local base_h = (MBJ.phase == "dealer_turn" and 145 or 100)
+  local canvas_h = base_h
+  if #MBJ.order > 0 then
+    for i = 1, #MBJ.order do
+      local p = MBJ.players[MBJ.order[i]]
+      if p ~= nil then
+        for hi = 1, #p.hands do
+          local is_active = (MBJ.order[i] == active_player_name() and hi == p.hand_index and MBJ.phase == "player_turn")
+          canvas_h = canvas_h + (is_active and 150 or 85)
+        end
+      end
+    end
+  end
+
+  if type(ui_rect_at) == "function" then
+    ui_rect_at(cx, cy, canvas_w, canvas_h, 0.08, 0.22, 0.12, 0.9, true, 12)
+    ui_rect_at(cx, cy, canvas_w, canvas_h, 0.15, 0.35, 0.20, 0.4, false, 12)
+  elseif type(ui_set_cursor) == "function" and type(ui_rect) == "function" then
+    ui_set_cursor(cx, cy)
+    ui_rect(canvas_w, canvas_h, 0.08, 0.22, 0.12, 0.9, true)
+  end
+
+  if type(ui_set_cursor) == "function" then ui_set_cursor(cx + (canvas_w/2) - 40, cy + 10) end
+  if type(ui_text_colored) == "function" then ui_text_colored("House Dealer (" .. tostring(hand_total(MBJ.dealer.cards)) .. ")", 0.8, 0.8, 0.8, 1.0) end
+  
+  local dealer_cards_w = (#MBJ.dealer.cards > 0) and (((#MBJ.dealer.cards - 1) * 25) + 40) or 40
+  local dealer_start_x = cx + (canvas_w / 2) - (dealer_cards_w / 2)
+  
+  if #MBJ.dealer.cards > 0 then
+    draw_visual_cards(MBJ.dealer.cards, dealer_start_x, cy + 30)
+  else
+    if type(ui_set_cursor) == "function" then ui_set_cursor(dealer_start_x, cy + 30) end
+    if type(ui_card_back) == "function" then ui_card_back() end
+  end
+
+  if MBJ.phase == "dealer_turn" then
+    local dtot = hand_total(MBJ.dealer.cards)
+    local btn_col = type(ui_button_colored) == "function"
+    
+    if dtot < 17 then
+      if type(ui_set_cursor) == "function" then ui_set_cursor(cx + (canvas_w/2) - 45, cy + 100) end
+      if btn_col and ui_button_colored(" Dealer Hit ##mbj_act_dhit", 0.2, 0.4, 0.7, 1.0) then on_command("dealer") end
     else
-      ui_text_colored("Transfer Status: " .. MBJ.import_status, 1.0, 0.3, 0.3, 1.0)
+      if type(ui_set_cursor) == "function" then ui_set_cursor(cx + (canvas_w/2) - 65, cy + 100) end
+      if btn_col and ui_button_colored(" Resolve Payouts ##mbj_act_res", 0.8, 0.6, 0.1, 1.0) then on_command("resolve") end
     end
   end
 
-  ui_separator()
-  ui_text_colored("Commands", 0.9, 0.95, 1.0, 1.0)
-  ui_text("/casino bjstart  - Start a round and draw dealer upcard")
-  ui_text("/casino deal     - Deal/draw for active player hand")
-  ui_text("/casino hit      - Hit active hand")
-  ui_text("/casino stand    - Stand active hand")
-  ui_text("/casino dd       - Double down active hand")
-  ui_text("/casino split    - Split active hand (when eligible)")
-  ui_text("/casino dealer   - Dealer draws one card")
-  ui_text("/casino resolve  - Resolve all outcomes and payouts")
-  ui_text("/casino undo     - Undo last tracked draw action")
+  safe_separator()
 
-  ui_text("")
-  ui_separator()
-  ui_text_colored("Template Tokens", 0.9, 0.95, 1.0, 1.0)
-  ui_text("<player>       Player/hand label")
-  ui_text("<bet>          Hand wager")
-  ui_text("<bank>         Player bank after adjustment")
-  ui_text("<card>         Drawn card rank (A,2..10,J,Q,K)")
-  ui_text("<total>        Current hand total (or player count on start)")
-  ui_text("<dealer_total> Dealer final/current total")
-  ui_text("<result>       Optional free-form result token")
-
-  ui_text("")
-  ui_separator()
-  ui_text_colored("Tips & Examples", 0.9, 0.95, 1.0, 1.0)
-  ui_text("- Typical flow: bjstart -> deal/hit/stand/dd/split -> dealer -> resolve")
-  ui_text("- Edit templates above to customize all announcements")
-  ui_text("- Example dealer_draw template: Dealer draws <card> (total <total>).")
-  ui_text("- Example result_win template: <player> wins! (<total> vs dealer <dealer_total>).")
-  ui_text("- Pipe-variant example: Dealer draws <card>|Dealer flips <card>|House draws <card>")
-end
-
--- Function: draw_cards
--- Purpose: Handles draw cards logic for the Blackjack script.
-local function draw_cards(values, idPrefix)
-  if values == nil or #values == 0 then
-    ui_text("(none)")
-    return
-  end
-
-  for i = 1, #values do
-    ui_button_colored_sized("[" .. rank_name(values[i]) .. "]##" .. tostring(idPrefix) .. "_" .. tostring(i), 42, 0, 0.25, 0.3, 0.36, 1.0)
-    if i < #values then ui_same_line() end
-  end
-end
-
--- Function: draw_ui
--- Purpose: Renders the main game UI and runs the per-frame update flow.
-function draw_ui()
-  process_pending_draws()
-
-  ui_text_colored("Macro Blackjack", 1.0, 0.9, 0.4, 1.0)
-  ui_separator()
-
-  if ui_button("BJ Start##mbj_start") then on_command("bjstart") end
-  ui_same_line()
-  if ui_button("Deal##mbj_deal") then on_command("deal") end
-  ui_same_line()
-  if ui_button("Hit##mbj_hit") then on_command("hit") end
-  ui_same_line()
-  if ui_button("Stand##mbj_stand") then on_command("stand") end
-  ui_same_line()
-  if ui_button("DD##mbj_dd") then on_command("dd") end
-  ui_same_line()
-  if ui_button("Split##mbj_split") then on_command("split") end
-  ui_same_line()
-  if ui_button("Dealer##mbj_dealer") then on_command("dealer") end
-  ui_same_line()
-  if ui_button("Resolve##mbj_resolve") then on_command("resolve") end
-  ui_same_line()
-  if ui_button("Undo##mbj_undo") then on_command("undo") end
-
-  ui_text("Status: " .. tostring(MBJ.phase) .. " | " .. tostring(MBJ.info))
-
-  local active = active_player_name()
-  if active ~= "" then
-    local ap = MBJ.players[active]
-    local ah = active_hand(ap)
-    local hi = (ap and ap.hand_index) or 1
-    if ap ~= nil and ah ~= nil then
-      ui_text("Active: " .. label_for(active, ap, hi) .. " (" .. tostring(hand_total(ah.cards)) .. ")")
-    end
-  end
-
-  ui_separator()
-  ui_text_colored("Dealer", 1.0, 0.92, 0.35, 1.0)
-  draw_cards(MBJ.dealer.cards, "mbj_dealer")
-  ui_text("Dealer total: " .. tostring(hand_total(MBJ.dealer.cards)))
-
-  ui_separator()
-  ui_text_colored("Players", 0.9, 0.95, 1.0, 1.0)
+  local current_y = cy + base_h
   if #MBJ.order == 0 then
-    ui_text("(no active round)")
+    if type(ui_set_cursor) == "function" then ui_set_cursor(cx + 15, current_y) end
+    if type(ui_text_colored) == "function" then ui_text_colored("Waiting for players...", 0.6, 0.6, 0.6, 1.0) end
   else
     for i = 1, #MBJ.order do
       local name = MBJ.order[i]
       local p = MBJ.players[name]
+      
       if p ~= nil then
-        ui_text(name .. " | base wager " .. tostring(p.wager))
+        local is_multi_hand = #p.hands > 1
+
         for hi = 1, #p.hands do
           local h = p.hands[hi]
-          local state = h.bust and "BUST" or (h.finished and "DONE" or "ACT")
-          if h.doubled then state = state .. " DOUBLE" end
-          if h.from_split then state = state .. " SPLIT" end
-          ui_text("  Hand " .. tostring(hi) .. " | wager " .. tostring(h.wager) .. " | total " .. tostring(hand_total(h.cards)) .. " | " .. state)
-          draw_cards(h.cards, "mbj_" .. name .. "_h" .. tostring(hi))
+          local is_active_hand = (name == active_player_name() and hi == p.hand_index and MBJ.phase == "player_turn")
+          local row_h = is_active_hand and 150 or 85
+          
+          if type(ui_set_cursor) == "function" then ui_set_cursor(cx + 15, current_y) end
+          local total = hand_total(h.cards)
+          local title = name .. " (Total: " .. total .. ")"
+          if is_multi_hand then title = name .. " [Hand " .. hi .. "] (Total: " .. total .. ")" end
+          
+          if type(ui_text_colored) == "function" then
+             if is_active_hand then ui_text_colored(title, 1.0, 0.95, 0.6, 1.0)
+             else ui_text_colored(title, 0.9, 0.9, 0.9, 1.0) end
+          end
+          
+          draw_visual_cards(h.cards, cx + 15, current_y + 20)
+
+          if type(ui_set_cursor) == "function" then ui_set_cursor(cx + canvas_w - 110, current_y + 20) end
+          local btn_col = type(ui_button_colored) == "function"
+          
+          -- Reverted to standard colored buttons to guarantee host compatibility
+          if h.bust and btn_col then ui_button_colored(" BUSTED ##b_"..hi, 0.8, 0.2, 0.2, 1.0)
+          elseif is_natural_blackjack(h) and btn_col then ui_button_colored(" BLACKJACK ##b_"..hi, 0.8, 0.6, 0.1, 1.0)
+          elseif h.doubled and btn_col then ui_button_colored(" DOUBLED ##b_"..hi, 0.2, 0.6, 0.8, 1.0)
+          elseif h.standing and btn_col then ui_button_colored(" STAND ##b_"..hi, 0.3, 0.3, 0.3, 1.0)
+          end
+
+          if is_active_hand and not h.finished and MBJ.phase == "player_turn" then
+            if type(ui_set_cursor) == "function" then ui_set_cursor(cx + 15, current_y + 110) end
+            
+            if #h.cards == 0 then
+              if btn_col and ui_button_colored("Deal Hand##mbj_act_deal", 0.2, 0.4, 0.7, 1.0) then on_command("deal") end
+            else
+              if btn_col and ui_button_colored("Hit##mbj_act_hit", 0.2, 0.6, 0.2, 1.0) then on_command("hit") end
+              safe_same_line()
+              if btn_col and ui_button_colored("Stand##mbj_act_stand", 0.7, 0.3, 0.2, 1.0) then on_command("stand") end
+              
+              -- Passed FALSE to bypass ImGui bank check threading issues for UI rendering only
+              if can_double(name, p, h, false) then
+                safe_same_line()
+                if btn_col and ui_button_colored("Double##mbj_act_dd", 0.8, 0.6, 0.1, 1.0) then on_command("dd") end
+              end
+              
+              if can_split(name, p, h, false) then
+                safe_same_line()
+                if btn_col and ui_button_colored("Split##mbj_act_sp", 0.5, 0.3, 0.7, 1.0) then on_command("split") end
+              end
+            end
+          end
+
+          current_y = current_y + row_h
         end
       end
-      ui_separator()
     end
   end
 
-  -- Help section moved to bottom
-  if ui_collapsing_header ~= nil then
+  if type(ui_set_cursor) == "function" then ui_set_cursor(cx, cy + canvas_h + 10) end
+  safe_dummy(canvas_w, 10)
+end
+
+function draw_config_ui()
+  if type(ui_text_colored) == "function" then ui_text_colored("Macro Blackjack Config", 0.8, 0.95, 0.8, 1.0) end
+  safe_separator()
+
+  if type(ui_checkbox) == "function" then
+    MBJ.config.allow_double = ui_checkbox("Allow Double Down##mbj_double", MBJ.config.allow_double)
+    MBJ.config.allow_double_after_split = ui_checkbox("Allow Double After Split##mbj_das", MBJ.config.allow_double_after_split)
+    MBJ.config.split_aces = ui_checkbox("Allow Split Aces##mbj_split_aces", MBJ.config.split_aces)
+  end
+  
+  if type(ui_input_int) == "function" then
+    MBJ.config.max_splits = math.max(0, ui_input_int("Max Splits##mbj_split_max", tonumber(MBJ.config.max_splits) or 2))
+    MBJ.config.blackjack_payout_x100 = math.max(100, ui_input_int("Blackjack Payout % ##mbj_bjpay", tonumber(MBJ.config.blackjack_payout_x100) or 150))
+
+    MBJ.draw.delay_ms = ui_input_int("Dice delay (ms)##mbj_dice_delay", effective_draw_delay_ms())
+    MBJ.draw.initial_deal_delay_ms = ui_input_int("Dealing delay (ms)##mbj_initial_deal_delay", effective_initial_deal_delay_ms())
+    MBJ.draw.reveal_delay_ms = ui_input_int("Result reveal delay (ms)##mbj_reveal_delay", effective_reveal_delay_ms())
+    MBJ.draw.timeout_ms = ui_input_int("Dice timeout (ms)##mbj_dice_timeout", effective_draw_timeout_ms())
+  end
+  
+  effective_draw_timeout_ms(); effective_initial_deal_delay_ms(); effective_reveal_delay_ms()
+
+  if type(ui_collapsing_header) == "function" and ui_collapsing_header("Chat Templates##mbj_tpl_hdr") then
+    if type(ui_input_text) == "function" then
+      MBJ.chat_templates.start = ui_input_text("Round Start##mbj_tpl_start", MBJ.chat_templates.start or "", 512)
+      MBJ.chat_templates.dealer_first = ui_input_text("Dealer First Card##mbj_tpl_dealer_first", MBJ.chat_templates.dealer_first or "", 512)
+      MBJ.chat_templates.dealer_draw = ui_input_text("Dealer Draw##mbj_tpl_dealer_draw", MBJ.chat_templates.dealer_draw or "", 512)
+      MBJ.chat_templates.player_draw2 = ui_input_text("Player Deal First Card##mbj_tpl_player_draw2", MBJ.chat_templates.player_draw2 or "", 512)
+      MBJ.chat_templates.player_draw = ui_input_text("Player Draw / Deal Final##mbj_tpl_player_draw", MBJ.chat_templates.player_draw or "", 512)
+      MBJ.chat_templates.player_hit = ui_input_text("Player Hit##mbj_tpl_player_hit", MBJ.chat_templates.player_hit or "", 512)
+      MBJ.chat_templates.player_stand = ui_input_text("Player Stand##mbj_tpl_player_stand", MBJ.chat_templates.player_stand or "", 512)
+      MBJ.chat_templates.player_double = ui_input_text("Player Double##mbj_tpl_player_double", MBJ.chat_templates.player_double or "", 512)
+      MBJ.chat_templates.player_split = ui_input_text("Player Split##mbj_tpl_player_split", MBJ.chat_templates.player_split or "", 512)
+      MBJ.chat_templates.player_bust = ui_input_text("Player Bust Notification##mbj_tpl_player_bust", MBJ.chat_templates.player_bust or "", 512)
+      
+      if type(ui_text_colored) == "function" then ui_text_colored("Payout Outcomes", 0.7, 0.85, 1.0, 1.0) end
+      MBJ.chat_templates.result_push = ui_input_text("Push Outcome##mbj_tpl_res_push", MBJ.chat_templates.result_push or "", 512)
+      MBJ.chat_templates.result_lose_bj = ui_input_text("Dealer BJ Outcome##mbj_tpl_res_lose_bj", MBJ.chat_templates.result_lose_bj or "", 512)
+      MBJ.chat_templates.result_bj = ui_input_text("Player BJ Outcome##mbj_tpl_res_res_bj", MBJ.chat_templates.result_bj or "", 512)
+      MBJ.chat_templates.result_win_bust = ui_input_text("Dealer Bust Outcome##mbj_tpl_res_win_bust", MBJ.chat_templates.result_win_bust or "", 512)
+      MBJ.chat_templates.result_win = ui_input_text("Standard Win Outcome##mbj_tpl_res_win", MBJ.chat_templates.result_win or "", 512)
+      MBJ.chat_templates.result_lose = ui_input_text("Standard Lose Outcome##mbj_tpl_res_lose", MBJ.chat_templates.result_lose or "", 512)
+    end
+  end
+
+  safe_separator()
+  if type(ui_text_colored) == "function" then ui_text_colored("Import / Export Configuration Blob", 0.4, 0.8, 1.0, 1.0) end
+  
+  if MBJ.share_blob == nil then MBJ.share_blob = "" end
+  if type(ui_input_text) == "function" then MBJ.share_blob = ui_input_text("Data String##mbj_blob_field", MBJ.share_blob, 8192) end
+  
+  local btn = type(ui_button) == "function"
+  if btn and ui_button("Generate Export Blob##mbj_btn_exp") then
+    MBJ.share_blob = export_blob()
+    MBJ.import_status = "SUCCESS: Generated export string!"
+  end
+  safe_same_line()
+  if btn and ui_button("Import From Blob##mbj_btn_imp") then MBJ.import_status = import_blob(MBJ.share_blob) end
+  safe_same_line()
+  if btn and ui_button("Save Config##mbj_btn_save_file") then save_config_file() end
+  safe_same_line()
+  if btn and ui_button("Load Config##mbj_btn_load_file") then load_config_file() end
+  
+  if MBJ.import_status and MBJ.import_status ~= "" and type(ui_text_colored) == "function" then
+    if string.find(MBJ.import_status, "SUCCESS") then ui_text_colored(MBJ.import_status, 0.3, 1.0, 0.3, 1.0)
+    else ui_text_colored(MBJ.import_status, 1.0, 0.3, 0.3, 1.0) end
+  end
+end
+
+function draw_ui()
+  process_pending_draws()
+
+  if type(ui_text_colored) == "function" then ui_text_colored("♠♥ MACRO BLACKJACK ♦♣", 1.0, 0.9, 0.4, 1.0) end
+  safe_separator()
+
+  local btn = type(ui_button) == "function"
+
+  if btn and ui_button("Start Round##mbj_start") then on_command("bjstart") end
+  safe_same_line()
+  if btn and ui_button("Undo Last Roll##mbj_undo") then on_command("undo") end
+
+  if type(ui_text) == "function" then ui_text("Status: " .. tostring(MBJ.phase) .. " | " .. tostring(MBJ.info)) end
+  safe_separator()
+
+  draw_game_canvas()
+
+  safe_separator()
+  if type(ui_text_colored) == "function" then ui_text_colored("Roster & Standings", 0.9, 0.95, 1.0, 1.0) end
+  
+  if #MBJ.order == 0 then
+    if type(ui_text) == "function" then ui_text("(no active round)") end
+  else
+    for i = 1, #MBJ.order do
+      local name = MBJ.order[i]
+      local p = MBJ.players[name]
+      if p ~= nil and type(ui_text) == "function" then
+        ui_text(name .. " | Base Wager: " .. tostring(p.wager))
+        for hi = 1, #p.hands do
+          local h = p.hands[hi]
+          local state = h.bust and "BUST" or (h.finished and "DONE" or "WAITING")
+          if h.doubled then state = state .. " (x2)" end
+          if h.from_split then state = state .. " (Split)" end
+          ui_text("  Hand " .. tostring(hi) .. " -> Total: " .. tostring(hand_total(h.cards)) .. " [" .. state .. "]")
+        end
+      end
+      safe_separator()
+    end
+  end
+
+  local wagered = tonumber(MBJ.rtp_wagered) or 0
+  local paid = tonumber(MBJ.rtp_paid) or 0
+  local rounds = tonumber(MBJ.rtp_rounds) or 0
+  local rtp = (wagered > 0) and ((paid / wagered) * 100.0) or 0
+  if type(ui_text_colored) == "function" then
+    ui_text_colored(string.format("� RTP: %.2f%% | Rounds: %d | Gil In: %d | Gil Out: %d", rtp, rounds, wagered, paid), 0.6, 0.8, 1.0, 1.0)
+  end
+
+  if type(ui_collapsing_header) == "function" then
     MBJ.show_help = ui_collapsing_header("Blackjack Help##mbj_help_section")
   end
 
   if MBJ.show_help == true then
-    ui_separator()
-    ui_text_colored("Commands", 0.9, 0.95, 1.0, 1.0)
-    ui_text("/casino bjstart  - Starts a new round, resets players/hands, then draws dealer upcard.")
-    ui_text("/casino deal     - Deals for the active hand (first call gives opening cards).")
-    ui_text("/casino hit      - Draws one card for the active hand.")
-    ui_text("/casino stand    - Marks active hand finished and advances to next hand/player.")
-    ui_text("/casino dd       - Doubles wager, draws one final card, then auto-stands.")
-    ui_text("/casino split    - Splits eligible 2-card hand into two hands with matching wager.")
-    ui_text("/casino dealer   - Dealer draws one card.")
-    ui_text("/casino resolve  - Compares all hands vs dealer and applies payouts.")
-    ui_text("/casino undo     - Reverts last tracked draw action.")
-
-    ui_text("")
-    ui_separator()
-    ui_text_colored("Template Tokens", 0.9, 0.95, 1.0, 1.0)
-    ui_text("<player>       Player name or split-hand label (example: Name [H2]).")
-    ui_text("<bet>          Wager used for that hand/result line.")
-    ui_text("<bank>         Player bank after applying win/loss changes.")
-    ui_text("<card>         Card rank drawn for that message (A, 2-10, J, Q, K).")
-    ui_text("<total>        Hand total for that event (or player count in start message).")
-    ui_text("<dealer_total> Dealer total used for result comparison.")
-    ui_text("<result>       Optional free-text result token if used by template.")
-
-    ui_text("")
-    ui_separator()
-    ui_text_colored("Tips & Examples", 0.9, 0.95, 1.0, 1.0)
-    ui_text("Typical flow: /casino bjstart -> deal/hit/stand/dd/split -> dealer -> resolve")
-    ui_text("Example dealer_draw: Dealer draws <card> (total <total>).")
-    ui_text("Example result_win: <player> wins! (<total> vs dealer <dealer_total>).")
-    ui_text("Pipe separator example: \"Dealer draws <card>|Dealer flips <card>|House draws <card>\"")
-    ui_text("Use quotes when passing text via command args.")
-    ui_text("")
-    ui_separator()
+    safe_separator()
+    if type(ui_text_colored) == "function" then ui_text_colored("Commands", 0.9, 0.95, 1.0, 1.0) end
+    if type(ui_text) == "function" then
+      ui_text("/casino bjstart  - Starts a new round, resets players/hands, then draws dealer upcard.")
+      ui_text("/casino deal     - Deals for the active hand (first call gives opening cards).")
+      ui_text("/casino hit      - Draws one card for the active hand.")
+      ui_text("/casino stand    - Marks active hand finished and advances to next hand/player.")
+      ui_text("/casino dd       - Doubles wager, draws one final card, then auto-stands.")
+      ui_text("/casino split    - Splits eligible 2-card hand into two hands with matching wager.")
+      ui_text("/casino dealer   - Dealer draws one card.")
+      ui_text("/casino resolve  - Compares all hands vs dealer and applies payouts.")
+      ui_text("/casino undo     - Reverts last tracked draw action.")
+    end
   end
 end
