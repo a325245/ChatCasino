@@ -1,7 +1,8 @@
 
 
 -- ============================================================================
--- Slots 3x3 1.1
+-- Slots 3x3 1.2
+-- fixed club symbol spam
 -- updates: fixed "0" roll being ignored
 
 -- Slots 3x3 1.0
@@ -416,11 +417,14 @@ local function parse_slots_roll(msg)
   local n = m:match("[Rr]andom!%s*(%d+)")
   if n then return tonumber(n) end
 
-  -- Fallback to host API to capture genuine system rolls "rolls a X."
+  -- Fallback to host API to capture genuine system rolls
   if dice_roll_value ~= nil then
-    local val = tonumber(dice_roll_value(m))
-    if val ~= nil and val >= 0 then
-      return val
+    -- Guard: Only check for a value if the message contains "roll"
+    if m:lower():find("roll") then 
+      local val = tonumber(dice_roll_value(m))
+      if val ~= nil and val >= 0 then
+        return val
+      end
     end
   end
 
