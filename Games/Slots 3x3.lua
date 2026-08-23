@@ -1,8 +1,8 @@
 
 
 -- ============================================================================
--- Slots 3x3 1.2
--- fixed club symbol spam
+-- Slots 3x3 1.4
+-- fixed club symbol spam, added void previous round, and commas
 -- updates: fixed "0" roll being ignored
 
 -- Slots 3x3 1.0
@@ -24,6 +24,7 @@ if SLOTS == nil then
     active_spin = nil,
     last_spin = nil,
     last_grid = nil,
+    last_result = nil,
     pending_grid_lines = nil,
     pending_grid_index = 1,
     pending_grid_next_at = 0,
@@ -90,6 +91,20 @@ normalize_win_template()
 -- Purpose: Handles trim text logic for the Slots script.
 local function trim_text(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 
+-- Function: format_number
+-- Purpose: Format integer with thousands separators for chat/UI readability.
+local function format_number(n)
+  local num = tonumber(n) or 0
+  local s = tostring(math.floor(num))
+  local sign = ""
+  if s:sub(1,1) == '-' then sign = '-' s = s:sub(2) end
+  local rev = s:reverse()
+  rev = rev:gsub('(%d%d%d)', '%1,')
+  s = rev:reverse()
+  if s:sub(1,1) == ',' then s = s:sub(2) end
+  return sign .. s
+end
+
 -- Function: output_channel_name
 -- Purpose: Resolves the chat channel that this script should use for output.
 local function output_channel_name()
@@ -127,9 +142,9 @@ local function announce(key, ctx)
   local vals = {
     ["<player>"] = tostring(ctx.player or ""),
     ["<lines>"] = tostring(ctx.lines or 0),
-    ["<total_bet>"] = tostring(ctx.total_bet or 0),
-    ["<payout>"] = tostring(ctx.payout or 0),
-    ["<total_win>"] = tostring(ctx.total_win or ctx.payout or 0),
+    ["<total_bet>"] = format_number(ctx.total_bet or 0),
+    ["<payout>"] = format_number(ctx.payout or 0),
+    ["<total_win>"] = format_number(ctx.total_win or ctx.payout or 0),
     ["<lines_won>"] = tostring(ctx.lines_won or 0),
     ["<reason>"] = tostring(ctx.reason or ""),
     ["<roll>"] = tostring(ctx.roll or 0),
@@ -352,6 +367,8 @@ local function process_pending_announcements()
         announce("result_lose", { player = res.player })
       end
       append_spin_log_row(res)
+      -- remember last settled result so dealer can void if necessary
+      SLOTS.last_result = res
     end
   end
 end
@@ -398,8 +415,21 @@ local function message_is_from_expected_roller(name, message)
   local speaker = normalize_player_name(name)
 
   if expected == "" then return true end
-  if speaker == expected then return true end
-  if speaker ~= "" and (speaker:find(expected, 1, true) or expected:find(speaker, 1, true)) then return true end
+  if speaker == expected then
+    -- require the message to look like a roll (contains digits or roll-related keywords)
+    local m = string.lower(tostring(message or ""))
+    if m:find("random") or m:find("roll") or m:find("dice") or m:find("%d%d%d") then
+      return true
+    end
+    return false
+  end
+  if speaker ~= "" and (speaker:find(expected, 1, true) or expected:find(speaker, 1, true)) then
+    local m = string.lower(tostring(message or ""))
+    if m:find("random") or m:find("roll") or m:find("dice") or m:find("%d%d%d") then
+      return true
+    end
+    return false
+  end
 
   if speaker == "" then
     local m = string.lower(tostring(message or ""))
@@ -676,6 +706,12 @@ local function process_chat_inputs()
         end
       end
 
+      -- If chat appears from non-player speakers during waiting_roll, ignore it to avoid false rolls
+      if SLOTS.phase == "waiting_roll" and SLOTS.active_spin and not resolve_eligible_player(name) then
+        -- skip messages from non-roster speakers while waiting for the expected roller
+        goto continue_chat_loop
+      end
+
       if SLOTS.phase == "waiting_roll" and not (SLOTS.config and SLOTS.config.dealer_rolls_for_player == true) and message_is_from_expected_roller(name, message) then
         local r = parse_slots_roll(message)
         if r ~= nil and r >= 0 and r <= 1000 then
@@ -685,6 +721,7 @@ local function process_chat_inputs()
           end
         end
       end
+    ::continue_chat_loop::
     end
   end
 end
@@ -735,6 +772,8 @@ function draw_ui()
     else
       announce("turn_prompt", {player=SLOTS.active_spin.player, roll=3, roll_text="3 times"})
     end
+    -- expose void button state to UI
+    SLOTS.last_result = SLOTS.last_result or nil
   end
 
   process_dealer_auto_rolls()
@@ -743,6 +782,27 @@ function draw_ui()
   ui_text_colored("ChatCasino: 3x3 Slots", 0.9, 0.7, 1.0, 1.0)
   ui_separator()
   ui_text("Status: " .. SLOTS.phase .. " | Queue: " .. #SLOTS.queue)
+
+  -- Void last settled turn (dealer action)
+  if SLOTS.last_result then
+    ui_same_line()
+    if ui_button("Void Last Turn") then
+      local res = SLOTS.last_result
+      local totalBet = tonumber(res.total_bet) or 0
+      local payout = tonumber(res.payout) or 0
+      local reversal = totalBet - payout
+      if dealer_add_bank ~= nil and res.player then
+        -- Apply reversal so player's bank returns to state before the spin
+        dealer_add_bank(res.player, reversal)
+      end
+      SLOTS.stats_paid = math.max(0, (SLOTS.stats_paid or 0) - payout)
+      SLOTS.stats_wagered = math.max(0, (SLOTS.stats_wagered or 0) - totalBet)
+      SLOTS.stats_spins = math.max(0, (SLOTS.stats_spins or 0) - 1)
+      table_announce("Last turn voided for " .. tostring(res.player) .. ".")
+      SLOTS.last_grid = nil
+      SLOTS.last_result = nil
+    end
+  end
 
   local g = { t={"[ - ]","[ - ]","[ - ]"}, m={"[ - ]","[ - ]","[ - ]"}, b={"[ - ]","[ - ]","[ - ]"} }
   if SLOTS.phase == "spinning" and SLOTS.active_spin then
